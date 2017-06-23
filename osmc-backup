@@ -1,0 +1,271 @@
+#! /bin/bash
+
+# A script to make backups of a running linux system.  The filesystem mounted at /
+# is backed up to a directory called system. User-specified branches of the filesystem 
+# with other mountpoints, eg /home or /boot are backed up to directories of the same name
+
+# Copyright (c) Graham Horner, 2017. 
+# Feel free to use and/or modify for any non-commercial purposes.
+# No warranty as to fitness of purpose or suitability
+# is given or should be inferred.
+
+# Any comments or bug reports to discourse.osmc.tv.
+
+VERSION='0.1.6'
+
+## *********************************************************************
+#            Set up the variables for your system
+## *********************************************************************
+
+# where do you want the backups?
+# the backup device must be mounted at /media/[mountpoint]
+# or /media/[user]/[mountpoint] or /mnt/[mountpoint]
+# the backup directory can be, say, /media/[mountpoint] or
+# any subdirectory of [mountpoint]
+
+DEFAULTBACKUPDIR="/media/60Gext4/osmcbackup"
+
+# we search mounts for filesystem types which understand
+# linux owners/permissions - add yours if not listed
+
+FSTYPES=(ext2 ext3 ext4 xfs reiserfs)
+
+# backups older than DAYSTOKEEP or older than the oldest of
+# BACKUPSTOKEEP will be deleted before making this backup
+
+# for how many days are you going to keep your backups?
+
+DAYSTOKEEP=7
+
+# or how many backups do you want to keep?
+
+BACKUPSTOKEEP=7
+
+# the two default partitions on a RPi install (system is /)
+# currently, this script does not work with normal directories, only mount points
+
+PARTSTOBACKUP=(system boot)
+
+## *********************************************************************
+#                  End of normal user input parameters
+#               See below at ### for more esoteric options
+## *********************************************************************
+
+# check if this is being run as root
+if (( $(/usr/bin/id -u) != 0 )); then
+	echo Must be run as root!
+	exit 1
+fi
+
+# provide for BACKUPDIR to be specified on a commandline
+if [ -z $1 ]; then
+	BACKUPDIR="$DEFAULTBACKUPDIR"
+else
+	BACKUPDIR="$1"
+fi
+
+# remove a trailing slash
+BACKUPDIR=${BACKUPDIR%/}
+
+# detailed rsync logs are be written to the script directory
+# and copied into the backup directory at the end of the process
+SCRIPTDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+LOGFILE="$SCRIPTDIR"/rsynclog$(date +%F)
+
+# using just the date to name the backup directories
+### add time of day for more frequent backups
+BACKUPDIRNOW="$BACKUPDIR"/$(date +%F)
+
+echo $(date) Backup version $VERSION
+echo Going to back up to $BACKUPDIRNOW "(unless I can't find it)."
+
+### if backing up to a network resource, you will need to mount it
+# eg for an SMB server:
+
+# cd /media
+# mkdir backup
+# mount -t cifs -o username=user,password=password //SERVER/backupdir backup
+
+### if the backup medium is not formatted for linux permissions (eg ntfs)
+# you could make an ext4 filesystem image and mount it with:
+
+# cd /media
+# mkdir backup
+# mount -o loop /path/to/filesystem/image backup
+
+# this technique can make for some horribly slow backups and will not work with FAT!!
+
+MEDIAFOUND=0
+if [[ "$BACKUPDIR/" =~ ((^/media/[^/]*)/[^/]*) ]] \
+	|| [[ "$BACKUPDIR/" =~ ((^/mnt/[^/]*)/[^/]*) ]] ; then
+	# check if it is mounted in /media/, /mnt/ or /media/user/
+	echo looking for mounted media
+	for i in 1 2; do
+		DRIVE=${BASH_REMATCH[$i]}
+		for t in ${FSTYPES[@]}; do
+			if ! BACKUPMNT=$(findmnt -lt $t | grep ^"$DRIVE "); then
+				continue
+			else
+				echo media found at $DRIVE
+				MEDIAFOUND=1
+				### remount with no delayed allocation
+				#if ! [[ ${BACKUPMNT[3]} =~ nodelalloc ]]; then
+				#	mount -o remount,nodelalloc,${BACKUPMNT[3]} $DRIVE || exit 1
+				#fi
+				break
+			fi
+		done
+		if (($MEDIAFOUND)); then break; fi
+	done
+#else
+###	or do something similar if backup media is mounted somewhere else
+	# and set DRIVE accordingly
+fi
+
+if ! (($MEDIAFOUND)); then
+	echo media for $BACKUPDIR not mounted in /media or /mnt or not formatted for linux
+	exit 1
+else
+	SPACEONDRIVE=$(df --sync --output=avail "$DRIVE" | grep "^[[:digit:]]")
+	printf "%'u%s\n" $SPACEONDRIVE " KiB available on drive"
+	SPACEFREED=0
+fi
+
+# find the most recent previous backup, count previous backups and delete old ones
+BACKUPDIRLAST=
+BACKUPCOUNT=0
+OLDESTKEEP=$(date -d "-$(($DAYSTOKEEP))days" +%F)
+echo -e "\nCounting and deleting backups older than $OLDESTKEEP or if more than $BACKUPSTOKEEP of them"
+if [ -d $BACKUPDIR ]; then
+	for i in $(ls -r $BACKUPDIR); do
+		if ! [[ $i =~ ^[0-9]*-[0-9]*-[0-9]*$ ]]; then
+			continue
+		elif [ "$BACKUPDIRNOW" != "$BACKUPDIR/$i" ]; then
+			if [ $BACKUPCOUNT == 0 ]; then
+				BACKUPDIRLAST="$BACKUPDIR/$i"
+			elif [[ $i < $OLDESTKEEP ]] || (($BACKUPCOUNT >= $BACKUPSTOKEEP - 1)); then
+				rm -r "$BACKUPDIR/$i"
+				echo Backup from $i removed
+				continue
+			fi
+			echo Backup from $i kept
+			BACKUPCOUNT=$(( $BACKUPCOUNT + 1 ))
+		fi
+	done
+	SPACEONDRIVE=$(df --sync --output=avail "$DRIVE" | grep "^[[:digit:]]")
+	printf "%s%'u%s\n" "Now " $SPACEONDRIVE " KiB available on drive"
+fi
+
+### here you may wish to add a check and abort or delete some previous
+# backups if there is a danger of filling up the backup device
+
+for source in ${PARTSTOBACKUP[@]}; do
+	# remove leading and trailing slashes
+	source=${source%/}
+	if [ $source == "system" ]; then
+		# directories generated by the system
+		EXCLUDES='--exclude=/dev/* --exclude=/proc/* --exclude=/sys/* --exclude=/run/* --exclude=/tmp/*'
+		# you probably don't want this directory - the equivalent of Windows *.chk files
+		EXCLUDES+=' --exclude=/lost+found'
+		# these mount directories should be excluded automatically by the mount process below
+		# but just to be sure
+		EXCLUDES+=' --exclude=/mnt/* --exclude=/media/*'
+###		you may like to uncomment the next line - these directories should be unnecessary for a restore
+		#EXCLUDES+=' --exclude=/var/cache/* --exclude=/var/run/* --exclude=/var/tmp/*'
+
+		# the system partition is mounted somewhere - find the device it is on
+		SRCDEV=$(findmnt -l | grep "^/\s.*/dev" | sed 's/^\S*\s*\(\S*\).*/\1/')
+	else
+		EXCLUDES=''
+		SRCDEV=$(findmnt -l | grep "^/$source\s.*/dev" | sed 's/^\S*\s*\(\S*\).*/\1/')
+	fi
+	EXCLUDES+=' --exclude=.gvfs'
+
+###	uncomment the following to avoid backing up the rubbish bin (when there is one)
+	#EXCLUDES+=' --exclude=Trash*/ --exclude=.Trash*/'
+
+	echo -e "\n$source is on $SRCDEV"
+
+	if ! [ -d "$BACKUPDIRNOW"/$source ]; then
+		mkdir -p "$BACKUPDIRNOW"/$source
+	elif ! [ $(ls "$BACKUPDIRNOW"/$source | wc -l) == 0 ]; then
+		echo $source has already been backed up today and will be overwritten
+		if read -n1 -rsp "Press any key within 10 secs to skip .... " -t 10 key; then
+			echo ""
+			continue
+		fi
+		echo ""
+		# rsync may not delete links to gash files in the backup directory
+		echo OK, deleting earlier backup
+		SPACEONDRIVE0=$(df --sync --output=avail "$DRIVE" | grep "^[[:digit:]]")
+		rm -r "$BACKUPDIRNOW/$source"* && echo $BACKUPDIRNOW/$source deleted
+		SPACEONDRIVE1=$(df --sync --output=avail "$DRIVE" | grep "^[[:digit:]]")
+		SPACEFREED=$(($SPACEFREED + $SPACEONDRIVE1 - $SPACEONDRIVE0))
+		printf "%s%'u%s\n" "Now " $SPACEONDRIVE1 " KiB available on drive"
+	fi
+
+	START=$(date +%s)
+	echo Backing up $source partition to "$BACKUPDIRNOW"/$source
+	cd /media
+	if ! [[ $SRCDEV == "" ]]; then
+		# source is already mounted, but we'll mount it again in /media
+		# to avoid recursing into nested mountpoints
+		if ! [ -d $source ]; then mkdir $source; fi
+		if [ $(ls $source | wc -l) == 0 ]; then mount $SRCDEV $source || exit 1; fi
+		# else we assume it's already mounted, (eg if last backup didn't complete)
+		# but lets just check
+		if ! findmnt -l | grep "^/media/$source " > /dev/null; then
+			echo /media/$source is not a mount point
+			exit 1
+		fi
+	else
+		echo Source is not a device - not currently supported
+		continue
+	fi
+
+	if [ ! $BACKUPDIRLAST ] || [ ! -d "$BACKUPDIRLAST/$source" ]; then
+		# no previous backup here
+		echo Backup directory is empty - making first copy
+		rsync -aHAX $EXCLUDES /media/$source/ "$BACKUPDIRNOW/$source"
+	else
+		echo There are $BACKUPCOUNT previous backups
+		echo Found latest backup at $BACKUPDIRLAST/$source
+		# make a conventional incremental backup to today's directory
+		echo Incremental backup: copying new and changed files to "$BACKUPDIRNOW/$source"
+		# if more than one backup in one day, results will be appended
+		if [ -e "$LOGFILE" ]; then echo >> "$LOGFILE"; fi
+###		the rsync -c option does a checksum comparison on each file - slow but sure
+		echo rsync -aHAXc "$EXCLUDES" --compare-dest="$BACKUPDIRLAST/$source" "/media/$source/" "$BACKUPDIRNOW/$source" >> "$LOGFILE"
+		rsync -aHAXc $EXCLUDES --compare-dest="$BACKUPDIRLAST/$source" "/media/$source/" "$BACKUPDIRNOW/$source" --log-file="$LOGFILE"
+###		keep a copy of the new and changed files (optional - comment out if not needed)
+		echo Making a copy of the new and changed files in "$BACKUPDIRNOW/$source-delta"
+		rsync -amHAX --link-dest="$BACKUPDIRNOW/$source" "$BACKUPDIRNOW/$source/" "$BACKUPDIRNOW/$source-delta"
+		# link all the files from the last backup
+		echo Cloning unchanged files from previous backup
+		cp -al --no-clobber "$BACKUPDIRLAST/$source" "$BACKUPDIRNOW"
+		# and remove files which were removed from the source to end up with an exact copy of the source
+		# --existing prevents new files being added (since the first rsync above)
+		# and --ignore-existing stops changes to the backup which might propogate to previous backups
+		echo Deleting files no longer on source
+		echo >> "$LOGFILE"
+		echo rsync -aHAX "$EXCLUDES" --existing --ignore-existing --delete --delete-excluded "/media/$source/" "$BACKUPDIRNOW/$source" >> "$LOGFILE"
+		rsync -aHAX $EXCLUDES --existing --ignore-existing --delete --delete-excluded /media/$source/ "$BACKUPDIRNOW/$source" --log-file="$LOGFILE"
+	fi
+
+	cd /media
+	umount /media/$source
+	rmdir /media/$source
+	ELAPSED=$(($(date +%s) - $START))
+	echo Time to back up $source: $(date -d@${ELAPSED} -u +%Hh:%Mm:%Ss)
+done
+
+cp "$LOGFILE" "$BACKUPDIRNOW/"
+
+# How much space did we use?
+#AVAIL=($(df --sync --output=avail "$DRIVE"))
+SPACEONDRIVENOW=$(df --sync --output=avail "$DRIVE" | grep "^[[:digit:]]")
+SPACEUSED=$(($SPACEONDRIVE + $SPACEFREED - $SPACEONDRIVENOW))
+printf "\n%'u%s\n" $SPACEUSED " KiB used in this backup"
+printf "%'u%s\n" $SPACEONDRIVENOW " KiB available on drive"
+
+echo -e "All done!\n"

@@ -1,0 +1,294 @@
+#! /bin/bash
+
+# A script to restore backups to removable media. It will also format an
+# SD card suitable for OSMC and restore the system and boot partitions appropriately
+
+# Copyright (c) Graham Horner, 2017. 
+# Feel free to use and/or modify for any non-commercial purposes.
+# No warranty as to fitness of purpose or suitability
+# is given or should be inferred.
+
+# Any comments or bug reports to discourse.osmc.tv.
+
+VERSION='0.1.3'
+set +x
+# check if this is being run as root
+if (( $(/usr/bin/id -u) != 0 )); then
+	echo Must be run as root!
+	exit 1
+fi
+
+# Parse arguments
+BACKUPDIR=$1
+MEDIA=$2
+FORMAT=0
+if [ "$1" == "-f" ]; then
+	FORMAT=1
+	BACKUPDIR=$2
+	MEDIA=$3
+elif  [ "$2" == "-f" ]; then
+	FORMAT=1
+	MEDIA=$3
+elif [ "$3" == "-f" ]; then
+	FORMAT=1
+fi
+
+if [ -z $@ ]; then
+	echo Usage: "$( basename "${BASH_SOURCE[0]}") [-f] backupdir|/[system|boot] [restore_device][partition]"
+	echo Example: "$( basename "${BASH_SOURCE[0]}") /media/backup/2017-04-01 sdc"
+	exit 1
+fi
+
+CLONE=0
+LIVE=0
+PARTStoRESTORE=(boot system)
+# check is we are only copying one partition
+for source in ${PARTStoRESTORE[@]}; do
+	if [[ "$BACKUPDIR" =~ "$source"$ ]]; then
+		#echo $BACKUPDIR
+		PARTStoRESTORE=($source)
+		BACKUPDIR=${BACKUPDIR%/$source}
+		#echo now $BACKUPDIR
+		if [ -z $BACKUPDIR ]; then
+			CLONE=1
+			LIVE=1
+			BACKUPDIR=/
+		fi
+	fi
+done
+# see if $BACKUPDIR is a device
+if [[ $(lsblk -lo NAME,TYPE | grep "$BACKUPDIR.*disk"$ ) ]]; then
+	CLONE=1
+	echo Going to copy $BACKUPDIR
+elif ! [[ "$BACKUPDIR" =~ ^/ ]]; then
+	# make BACKUPDIR path absolute
+	BACKUPDIR="$PWD/$BACKUPDIR"
+	# tidy it
+	BACKUPDIR=$( cd "$BACKUPDIR" && pwd )
+else
+	if [ $BACKUPDIR == "/" ]; then
+		CLONE=1
+		LIVE=1
+		echo Going to copy the working SD card
+	else
+		# remove a trailing slash
+		BACKUPDIR=${BACKUPDIR%/}
+	fi
+fi
+
+SCRIPTDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+BACKUPFOUND=0
+
+if [ -d "$BACKUPDIR" ] || (($CLONE)); then
+	for source in ${PARTStoRESTORE[@]}; do
+		if (($CLONE)); then
+			if (($LIVE)); then
+				if [ $source == "system" ]; then
+					# the system partition is mounted somewhere - find the device it is on
+					SRCDEV=$(findmnt -l | grep "^/\s.*/dev" | sed 's/^\S*\s*\(\S*\).*/\1/')
+				else
+					SRCDEV=$(findmnt -l | grep "^/$source\s.*/dev" | sed 's/^\S*\s*\(\S*\).*/\1/')
+				fi
+			else
+				if [ $source == "system" ]; then
+					SRCDEV=/dev/$BACKUPDIR2
+					umount /dev/$BACKUPDIR2
+				elif [ $source == "boot" ]; then
+					SRCDEV=/dev/$BACKUPDIR1
+					umount /dev/$BACKUPDIR1
+				fi
+			fi
+			cd /media
+			mkdir -p sdcard
+			cd sdcard
+			if ! [[ $SRCDEV == "" ]]; then
+				# source is already mounted, but we'll mount it again in /media
+				# to avoid recursing into nested mountpoints
+				if ! [ -d $source ]; then mkdir $source; fi
+				if [ $(ls $source | wc -l) == 0 ]; then mount $SRCDEV $source || exit 1; fi
+				# else we assume it's already mounted, (eg if last backup didn't complete)
+				# but lets just check
+				if ! findmnt -l | grep "^/media/sdcard/$source " &> /dev/null; then
+					echo /media/sdcard/$source is not a mount point
+					exit 1
+				fi
+			else
+				echo Source is not a device - not currently supported
+				continue
+			fi
+			BACKUPDIR=/media/sdcard
+		fi
+		if [ -d "$BACKUPDIR"/$source ]; then
+			BACKUPFOUND=$(($BACKUPFOUND + 1))
+		else
+			echo There is no $source directory in $BACKUPDIR, please check
+		fi
+	done
+	if ! (($BACKUPFOUND)); then exit 0; fi
+else
+	echo Cannot find $BACKUPDIR, please check
+	exit 0
+fi
+
+# have a look for the media to install to
+MEDIA=${MEDIA##/dev/}
+while ! lsblk | grep "^$MEDIA " > /dev/null; do
+	#lsblk -l | grep "\s1\s*\S.*\sdisk" | sed 's/^\(\S*\)\s.*/\1/'
+	lsblk -lo NAME,SIZE,TYPE | grep "disk"$
+	read -rp "Please enter the device name of the media to restore to ... " MEDIA
+	echo
+	if ! findmnt -l "/dev/$MEDIA"1 | grep "/media"  > /dev/null; then
+		read -n1 -rsp "/dev/$MEDIA is mounted but not removable - are you sure (Y/N)?" ANSWER
+		if ! [[ $ANSWER =~ [Yy] ]]; then
+			echo
+			echo Aborting ....
+			exit 0
+		else
+			echo
+		fi
+	fi
+done
+
+# trim partition number if both partitions to be restored
+PARTNO=0
+if [[ $MEDIA =~ "(.*)([0-9])"$ ]]; then
+	if [ ${#PARTStoRESTORE[@]} \> 1 ] || (($FORMAT)); then
+		MEDIA=${BASH_REMATCH[1]}
+	else
+		PARTNO=${BASH_REMATCH[2]}
+	fi
+fi
+
+if (($FORMAT)); then
+	read -n1 -rsp "Going to erase all of /dev/$MEDIA, press Y to continue ... " ANSWER
+	if ! [[ $ANSWER =~ [Yy] ]]; then
+		echo
+		echo Aborting ....
+		exit 0
+	else
+		echo
+	fi
+
+	if findmnt -l "/dev/$MEDIA"1 > /dev/null; then
+		PART=1
+		while findmnt -l "/dev/$MEDIA$PART" > /dev/null; do
+			if ! umount "/dev/$MEDIA$PART"; then
+				echo
+				echo Problem unmounting /dev/$MEDIA$PART
+				exit 1
+			fi
+			PART=$(($PART + 1))
+		done
+	fi
+
+	# find out how big it is to determine AU size
+	DISKSIZE=$(lsblk -blo NAME,SIZE | grep "$MEDIA " | sed 's/^\S*\s*\(\S*\)\s.*/\1/')
+	BLANK=4MiB
+	PART1=248MiB
+	if (( DISKSIZE > 33000000000)); then
+		BLANK=16MiB
+		PART1=256MiB
+	fi
+
+	echo Formatting SD card $MEDIA
+	parted -s /dev/$MEDIA mklabel msdos mkpart primary fat32 $BLANK $PART1 \
+		&& parted /dev/"$MEDIA" set 1 lba on \
+		&& parted -s /dev/$MEDIA -- mkpart primary ext4 $PART1 -1s
+	
+	# wait for the system to register the new partitions
+	while ! [ -e /dev/"$MEDIA"1 ]; do sleep 1; done
+	mkfs.vfat -F 32 -s 4 -I /dev/"$MEDIA"1
+	while ! [ -e /dev/"$MEDIA"2 ]; do sleep 1; done
+	mkfs.ext4 /dev/"$MEDIA"2
+fi
+
+# check what partitions we have
+PARTS=($(lsblk -blo NAME,FSTYPE,SIZE | grep "$MEDIA\S\s"))
+#echo Partitions found: ${PARTS[@]}
+
+START=$(date +%s)
+for source in ${PARTStoRESTORE[@]}; do
+	PARTNAME=
+	if [ $source == "boot" ]; then
+		PARTTYPE=vfat; PARTSIZEMIN=244000000
+		CPPARAM="--no-preserve=ownership"
+	elif [ $source == "system" ]; then
+		PARTTYPE=ext ; PARTSIZEMIN=($(du -sB1 $BACKUPDIR/$source))
+		CPPARAM=
+		printf "%'u%s\n" $(($PARTSIZEMIN / 1024)) "KiB in $source backup"
+	fi
+	for partindex in $(seq 1 3 "$((${#PARTS[@]} - 2))"); do
+		# do it only once if partition number has been specified
+		if [ $PARTNO != "0" ]; then
+			if [ $partindex \> "$(( ($PARTNO - 1)*3 + 1 ))" ]; then break
+			elif [ $partindex \< "$(( ($PARTNO - 1)*3 + 1 ))" ]; then continue
+			fi
+		fi
+		if [[ ${PARTS[$partindex]} =~ "$PARTTYPE" ]]; then
+			PARTNAME=${PARTS[$(($partindex - 1))]}; #echo $PARTNAME
+			PARTSIZE=${PARTS[$(($partindex + 1))]}; #echo $PARTSIZE
+			if (( PARTSIZE < PARTSIZEMIN )); then
+				printf "%s%'u%s\n" "$PARTTYPE partition at $PARTNAME may be too small (" $(($PARTSIZE / 1024)) " KiB)"
+				read -n1 -rsp "Press Y to continue, any other key to skip" ANSWER
+				if ! [[ $ANSWER =~ [Yy] ]]; then
+					echo
+					echo Skipping $PARTNAME partition ....
+					PARTNAME=skip
+					continue
+				else
+					break
+				fi
+			else
+				printf "%s%'u%s\n" "Found $PARTTYPE partition at $PARTNAME with enough space (" $(($PARTSIZE / 1024)) " KiB)"
+				read -n1 -rsp "Press Y to write $source to this partition, any other key to skip" ANSWER
+				if ! [[ $ANSWER =~ [Yy] ]]; then
+					echo
+					echo Skipping $PARTNAME partition ....
+					PARTNAME=skip
+					continue
+				else
+					break
+				fi
+			fi
+		fi
+	done
+	if [ -z $PARTNAME ]; then
+		echo "Can't find a suitable $PARTTYPE partition for $source"
+		continue
+	fi
+	if [ $PARTNAME == "skip" ]; then continue; fi
+
+	# check if target is already mounted
+	TARGET=$(findmnt -lo SOURCE,TARGET "/dev/$PARTNAME" | grep '(media)|(mnt)' | sed 's/^.*\/\(media\)|\(mnt\)\/\(.*\)/\/\1\/\3/')
+	echo
+	echo $TARGET
+	if [ -z $TARGET ]; then
+		cd /media
+		mkdir $source
+		mount /dev/"$PARTNAME" $source
+		TARGET=/media/$source
+	elif ! $(echo "$TARGET" | grep "/media"  > /dev/null); then
+		read -n1 -rsp "/dev/$PARTNAME is mounted but not removable - are you sure (Y/N)?" ANSWER
+		if ! [[ $ANSWER =~ [Yy] ]]; then
+			echo
+			echo Aborting ....
+			exit 0
+		else
+			echo
+		fi
+	fi
+	echo erasing all files on /dev/$PARTNAME
+	if [ $(ls "$TARGET" | wc -l) \> 0 ]; then rm -r $TARGET/*; fi
+	echo Copying $BACKUPDIR/$source to /dev/$PARTNAME
+	cp -a $CPPARAM $BACKUPDIR/$source/. $TARGET
+	umount $TARGET
+	if [ -d $TARGET ]; then rmdir $TARGET; fi
+	umount /media/sdcard/$source &> /dev/null && \
+	rm -r /media/sdcard/$source &> /dev/null
+done
+rmdir /media/sdcard &> /dev/null
+
+ELAPSED=$(($(date +%s) - $START))
+echo Time to restore: $(date -d@${ELAPSED} -u +%Hh:%Mm:%Ss)
+

@@ -18,7 +18,7 @@ There is a small risk that files can arrive at the backup corrupted if they are 
 	systemctl start mediacenter
 
 # osmc-restore
-This script copies backed-up back to an SD card, optionally formatting the card before the copy. It prompts for the device to write to and checks that it has the right partitions and enough space on each.
+This script copies backed-up files back to an SD card, optionally formatting the card before the copy. It prompts for the device to write to and checks that it has the right partitions and enough space on each.
 
 You can also just clone your working SD card to another card by specifying / as the source directory.
 

@@ -9,6 +9,17 @@ Some checks are included, for the existence of the backup media for example, but
 
 Everyone will have their own take on how and when to make backups. This script can keep daily copies of your SD card for ever which would be overkill but you can set up your own schedule. I keep backups for a week. The only dependency is rsync, which is in the repository, and for unattended operation cron, which is in the App Store. A suitable crontab line looks like:
 
-15 2 * * * root /home/osmc/osmc-backup >> /home/osmc/backlog
+	15 2 * * * root /home/osmc/osmc-backup >> /home/osmc/backlog
+
+There is a small risk that files can arrive at the backup corrupted if they are written to by the system while being transfered by rsync, or files being copied in an inconsistent state. I have not noticed any problems running osmc from a restored SD card but you could add a wrapper script which stops mediacenter and any other things which might write to their data files (eg tvheadend), runs osmc-backup then restarts the services.
+
+	systemctl stop mediacenter
+	/path/to/osmc-backup >> /path/to/backlog
+	systemctl start mediacenter
+
+# osmc-restore
+This script copies backed-up back to an SD card, optionally formatting the card before the copy. It prompts for the device to write to and checks that it has the right partitions and enough space on each.
+
+You can also just clone your working SD card to another card by specifying / as the source directory.
 
 Comments and suggestions for improvement are welcome.

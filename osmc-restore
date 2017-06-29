@@ -10,7 +10,7 @@
 
 # Any comments or bug reports to discourse.osmc.tv.
 
-VERSION='0.1.3'
+VERSION='0.1.3a'
 set +x
 # check if this is being run as root
 if (( $(/usr/bin/id -u) != 0 )); then
@@ -19,16 +19,16 @@ if (( $(/usr/bin/id -u) != 0 )); then
 fi
 
 # Parse arguments
-BACKUPDIR=$1
-MEDIA=$2
+BACKUPDIR="$1"
+MEDIA="$2"
 FORMAT=0
 if [ "$1" == "-f" ]; then
 	FORMAT=1
-	BACKUPDIR=$2
-	MEDIA=$3
+	BACKUPDIR="$2"
+	MEDIA="$3"
 elif  [ "$2" == "-f" ]; then
 	FORMAT=1
-	MEDIA=$3
+	MEDIA="$3"
 elif [ "$3" == "-f" ]; then
 	FORMAT=1
 fi
@@ -49,7 +49,7 @@ for source in ${PARTStoRESTORE[@]}; do
 		PARTStoRESTORE=($source)
 		BACKUPDIR=${BACKUPDIR%/$source}
 		#echo now $BACKUPDIR
-		if [ -z $BACKUPDIR ]; then
+		if [ -z "$BACKUPDIR" ]; then
 			CLONE=1
 			LIVE=1
 			BACKUPDIR=/
@@ -66,7 +66,7 @@ elif ! [[ "$BACKUPDIR" =~ ^/ ]]; then
 	# tidy it
 	BACKUPDIR=$( cd "$BACKUPDIR" && pwd )
 else
-	if [ $BACKUPDIR == "/" ]; then
+	if [ "$BACKUPDIR" == "/" ]; then
 		CLONE=1
 		LIVE=1
 		echo Going to copy the working SD card
@@ -214,7 +214,7 @@ for source in ${PARTStoRESTORE[@]}; do
 		PARTTYPE=vfat; PARTSIZEMIN=244000000
 		CPPARAM="--no-preserve=ownership"
 	elif [ $source == "system" ]; then
-		PARTTYPE=ext ; PARTSIZEMIN=($(du -sB1 $BACKUPDIR/$source))
+		PARTTYPE=ext ; PARTSIZEMIN=($(du -sB1 "$BACKUPDIR/$source"))
 		CPPARAM=
 		printf "%'u%s\n" $(($PARTSIZEMIN / 1024)) "KiB in $source backup"
 	fi
@@ -228,7 +228,7 @@ for source in ${PARTStoRESTORE[@]}; do
 		if [[ ${PARTS[$partindex]} =~ "$PARTTYPE" ]]; then
 			PARTNAME=${PARTS[$(($partindex - 1))]}; #echo $PARTNAME
 			PARTSIZE=${PARTS[$(($partindex + 1))]}; #echo $PARTSIZE
-			if (( PARTSIZE < PARTSIZEMIN )); then
+			if (( $PARTSIZE < $PARTSIZEMIN )); then
 				printf "%s%'u%s\n" "$PARTTYPE partition at $PARTNAME may be too small (" $(($PARTSIZE / 1024)) " KiB)"
 				read -n1 -rsp "Press Y to continue, any other key to skip" ANSWER
 				if ! [[ $ANSWER =~ [Yy] ]]; then
@@ -263,7 +263,7 @@ for source in ${PARTStoRESTORE[@]}; do
 	TARGET=$(findmnt -lo SOURCE,TARGET "/dev/$PARTNAME" | grep '(media)|(mnt)' | sed 's/^.*\/\(media\)|\(mnt\)\/\(.*\)/\/\1\/\3/')
 	echo
 	echo $TARGET
-	if [ -z $TARGET ]; then
+	if [ -z "$TARGET" ]; then
 		cd /media
 		mkdir $source
 		mount /dev/"$PARTNAME" $source
@@ -279,11 +279,11 @@ for source in ${PARTStoRESTORE[@]}; do
 		fi
 	fi
 	echo erasing all files on /dev/$PARTNAME
-	if [ $(ls "$TARGET" | wc -l) \> 0 ]; then rm -r $TARGET/*; fi
+	if [ $(ls "$TARGET" | wc -l) \> 0 ]; then rm -r "$TARGET"/*; fi
 	echo Copying $BACKUPDIR/$source to /dev/$PARTNAME
-	cp -a $CPPARAM $BACKUPDIR/$source/. $TARGET
-	umount $TARGET
-	if [ -d $TARGET ]; then rmdir $TARGET; fi
+	cp -a "$CPPARAM" "$BACKUPDIR/$source/". "$TARGET"
+	umount "$TARGET"
+	if [ -d "$TARGET" ]; then rmdir "$TARGET"; fi
 	umount /media/sdcard/$source &> /dev/null && \
 	rm -r /media/sdcard/$source &> /dev/null
 done

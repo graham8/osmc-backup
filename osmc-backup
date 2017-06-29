@@ -11,7 +11,7 @@
 
 # Any comments or bug reports to discourse.osmc.tv.
 
-VERSION='0.1.6'
+VERSION='0.1.6a'
 
 ## *********************************************************************
 #            Set up the variables for your system
@@ -58,7 +58,7 @@ if (( $(/usr/bin/id -u) != 0 )); then
 fi
 
 # provide for BACKUPDIR to be specified on a commandline
-if [ -z $1 ]; then
+if [ -z "$1" ]; then
 	BACKUPDIR="$DEFAULTBACKUPDIR"
 else
 	BACKUPDIR="$1"
@@ -136,8 +136,8 @@ BACKUPDIRLAST=
 BACKUPCOUNT=0
 OLDESTKEEP=$(date -d "-$(($DAYSTOKEEP))days" +%F)
 echo -e "\nCounting and deleting backups older than $OLDESTKEEP or if more than $BACKUPSTOKEEP of them"
-if [ -d $BACKUPDIR ]; then
-	for i in $(ls -r $BACKUPDIR); do
+if [ -d "$BACKUPDIR" ]; then
+	for i in $(ls -r "$BACKUPDIR"); do
 		if ! [[ $i =~ ^[0-9]*-[0-9]*-[0-9]*$ ]]; then
 			continue
 		elif [ "$BACKUPDIRNOW" != "$BACKUPDIR/$i" ]; then
@@ -223,7 +223,7 @@ for source in ${PARTSTOBACKUP[@]}; do
 		continue
 	fi
 
-	if [ ! $BACKUPDIRLAST ] || [ ! -d "$BACKUPDIRLAST/$source" ]; then
+	if [ ! "$BACKUPDIRLAST" ] || [ ! -d "$BACKUPDIRLAST/$source" ]; then
 		# no previous backup here
 		echo Backup directory is empty - making first copy
 		rsync -aHAX $EXCLUDES /media/$source/ "$BACKUPDIRNOW/$source"
@@ -236,7 +236,7 @@ for source in ${PARTSTOBACKUP[@]}; do
 		if [ -e "$LOGFILE" ]; then echo >> "$LOGFILE"; fi
 ###		the rsync -c option does a checksum comparison on each file - slow but sure
 		echo rsync -aHAXc "$EXCLUDES" --compare-dest="$BACKUPDIRLAST/$source" "/media/$source/" "$BACKUPDIRNOW/$source" >> "$LOGFILE"
-		rsync -aHAXc $EXCLUDES --compare-dest="$BACKUPDIRLAST/$source" "/media/$source/" "$BACKUPDIRNOW/$source" --log-file="$LOGFILE"
+		rsync -aHAXc "$EXCLUDES" --compare-dest="$BACKUPDIRLAST/$source" "/media/$source/" "$BACKUPDIRNOW/$source" --log-file="$LOGFILE"
 ###		keep a copy of the new and changed files (optional - comment out if not needed)
 		echo Making a copy of the new and changed files in "$BACKUPDIRNOW/$source-delta"
 		rsync -amHAX --link-dest="$BACKUPDIRNOW/$source" "$BACKUPDIRNOW/$source/" "$BACKUPDIRNOW/$source-delta"
@@ -249,7 +249,7 @@ for source in ${PARTSTOBACKUP[@]}; do
 		echo Deleting files no longer on source
 		echo >> "$LOGFILE"
 		echo rsync -aHAX "$EXCLUDES" --existing --ignore-existing --delete --delete-excluded "/media/$source/" "$BACKUPDIRNOW/$source" >> "$LOGFILE"
-		rsync -aHAX $EXCLUDES --existing --ignore-existing --delete --delete-excluded /media/$source/ "$BACKUPDIRNOW/$source" --log-file="$LOGFILE"
+		rsync -aHAX "$EXCLUDES" --existing --ignore-existing --delete --delete-excluded /media/$source/ "$BACKUPDIRNOW/$source" --log-file="$LOGFILE"
 	fi
 
 	cd /media

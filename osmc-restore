@@ -10,7 +10,7 @@
 
 # Any comments or bug reports to discourse.osmc.tv.
 
-VERSION='0.1.3a'
+VERSION='0.1.4'
 set +x
 # check if this is being run as root
 if (( $(/usr/bin/id -u) != 0 )); then

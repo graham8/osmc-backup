@@ -193,11 +193,11 @@ if (($FORMAT)); then
 
 	echo Formatting SD card $MEDIA
 	parted -s /dev/$MEDIA mklabel msdos mkpart primary fat32 $BLANK $PART1 \
-		&& parted /dev/"$MEDIA" set 1 lba on \
 		&& parted -s /dev/$MEDIA -- mkpart primary ext4 $PART1 -1s
 	
 	# wait for the system to register the new partitions
 	while ! [ -e /dev/"$MEDIA"1 ]; do sleep 1; done
+	parted /dev/"$MEDIA" set 1 lba on
 	mkfs.vfat -F 32 -s 4 -I /dev/"$MEDIA"1
 	while ! [ -e /dev/"$MEDIA"2 ]; do sleep 1; done
 	mkfs.ext4 /dev/"$MEDIA"2

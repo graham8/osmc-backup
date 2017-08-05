@@ -11,7 +11,7 @@
 
 # Any comments or bug reports to discourse.osmc.tv.
 
-VERSION='0.1.7'
+VERSION='0.1.8rc2' ## don't backup boot separately for vero4k, don't mount devices, pause services.
 
 ## *********************************************************************
 #            Set up the variables for your system
@@ -23,19 +23,21 @@ VERSION='0.1.7'
 # the backup directory can be, say, /media/[mountpoint] or
 # any subdirectory of [mountpoint]
 
-DEFAULTBACKUPDIR="/media/60Gext4/osmcbackup"
+DEFAULTBACKUPDIR="/media/1Text4/osmcbackup"
 
 # we search mounts for filesystem types which understand
 # linux owners/permissions - add yours if not listed
+# !! smb/cifs does not support hard links so cannot be used
+# !! even if the backup destination is ext formatted
 
-FSTYPES=(ext2 ext3 ext4 xfs reiserfs)
+FSTYPES=(ext xfs reiserfs nfs)
 
 # backups older than DAYSTOKEEP or older than the oldest of
 # BACKUPSTOKEEP will be deleted before making this backup
 
 # for how many days are you going to keep your backups?
 
-DAYSTOKEEP=7
+DAYSTOKEEP=365
 
 # or how many backups do you want to keep?
 
@@ -45,6 +47,11 @@ BACKUPSTOKEEP=7
 # currently, this script does not work with normal directories, only mount points
 
 PARTSTOBACKUP=(system boot)
+
+# to minimize the risk of corrupted files or inconsistent file structure
+# shut down the following services
+
+SERVICESTOPAUSE=(tvheadend mediacenter)
 
 ## *********************************************************************
 #                  End of normal user input parameters
@@ -57,6 +64,12 @@ if (( $(/usr/bin/id -u) != 0 )); then
 	exit 1
 fi
 
+# check we have rsync
+if ! rsync --version &> /dev/null; then
+	echo -e "\nThis script needs rsync but I can't find it\nTry: sudo apt-get install rsync (or similar)\n"
+	exit 0
+fi
+
 # provide for BACKUPDIR to be specified on a commandline
 if [ -z "$1" ]; then
 	BACKUPDIR="$DEFAULTBACKUPDIR"
@@ -67,7 +80,7 @@ fi
 # remove a trailing slash
 BACKUPDIR=${BACKUPDIR%/}
 
-# detailed rsync logs are be written to the script directory
+# detailed rsync logs are written to the script directory
 # and copied into the backup directory at the end of the process
 SCRIPTDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 LOGFILE="$SCRIPTDIR"/rsynclog$(date +%F)
@@ -80,11 +93,11 @@ echo $(date) Backup version $VERSION
 echo Going to back up to $BACKUPDIRNOW "(unless I can't find it)."
 
 ### if backing up to a network resource, you will need to mount it
-# eg for an SMB server:
+# eg for an nfs server:
 
 # cd /media
-# mkdir backup
-# mount -t cifs -o username=user,password=password //SERVER/backupdir backup
+# mkdir backupshare
+# mount.nfs servername/sharename backupshare
 
 ### if the backup medium is not formatted for linux permissions (eg ntfs)
 # you could make an ext4 filesystem image and mount it with:
@@ -96,34 +109,45 @@ echo Going to back up to $BACKUPDIRNOW "(unless I can't find it)."
 # this technique can make for some horribly slow backups and will not work with FAT!!
 
 MEDIAFOUND=0
+FSTYPE=""
 if [[ "$BACKUPDIR/" =~ ((^/media/[^/]*)/[^/]*) ]] \
 	|| [[ "$BACKUPDIR/" =~ ((^/mnt/[^/]*)/[^/]*) ]] ; then
 	# check if it is mounted in /media/, /mnt/ or /media/user/
 	echo looking for mounted media
 	for i in 1 2; do
 		DRIVE=${BASH_REMATCH[$i]}
-		for t in ${FSTYPES[@]}; do
-			if ! BACKUPMNT=$(findmnt -lt $t | grep ^"$DRIVE "); then
-				continue
-			else
-				echo media found at $DRIVE
-				MEDIAFOUND=1
-				### remount with no delayed allocation
-				#if ! [[ ${BACKUPMNT[3]} =~ nodelalloc ]]; then
-				#	mount -o remount,nodelalloc,${BACKUPMNT[3]} $DRIVE || exit 1
-				#fi
-				break
-			fi
-		done
+		if ! BACKUPMNT=$(findmnt -l | grep ^"$DRIVE "); then
+			continue
+		else
+			for t in ${FSTYPES[@]}; do
+				if ! [[ $BACKUPMNT =~ [[:space:]]$t.?[[:space:]] ]]; then
+					continue
+				else
+					FSTYPE=$t
+					echo media found at $DRIVE, accessed as $FSTYPE
+					MEDIAFOUND=1
+					if [[ $FSTYPE == "nfs" ]]; then ## ACLs and xattrs are not supported
+						echo nfs does not support ACLs or extended attributes - these will not be transferred
+						echo This should not affect OSMC
+					fi
+					### remount with no delayed allocation
+					#if ! [[ ${BACKUPMNT[3]} =~ nodelalloc ]]; then
+					#	mount -o remount,nodelalloc,${BACKUPMNT[3]} $DRIVE || exit 1
+					#fi
+					break
+				fi
+				if ! (($MEDIAFOUND)); then
+					echo -e "Found backup media at $DRIVE but it's not in a suitable format\nShould be one of ${FSTYPES[@]}"
+					exit 1
+				fi
+			done
+		fi
 		if (($MEDIAFOUND)); then break; fi
 	done
-#else
-###	or do something similar if backup media is mounted somewhere else
-	# and set DRIVE accordingly
 fi
 
 if ! (($MEDIAFOUND)); then
-	echo media for $BACKUPDIR not mounted in /media or /mnt or not formatted for linux
+	echo media for $BACKUPDIR not mounted in /media or /mnt
 	exit 1
 else
 	SPACEONDRIVE=$(df --sync --output=avail "$DRIVE" | grep -o "[[:digit:]]*")
@@ -159,12 +183,36 @@ fi
 ### here you may wish to add a check and abort or delete some previous
 # backups if there is a danger of filling up the backup device
 
+function ToggleServices(){
+	for s in ${SERVICESTOPAUSE[@]}; do
+		echo Going to $1 $s
+		systemctl $1 $s.service
+	done
+}
+
+function DieNicely(){
+#	umount /media/$1 &> /dev/null
+#	rmdir /media/$1
+	ToggleServices "start"
+	echo $2
+	echo rsync exited with status \("$?"\) see www.samba.org/ftp/rsync/rsync.html for details.
+	exit 1
+}
+
+ToggleServices "stop"
+
 for source in ${PARTSTOBACKUP[@]}; do
+	# vero does not have two partitions
+	if [ $(uname -n) == 'vero' ] && [ $source != 'system' ]; then continue; fi
 	# remove leading and trailing slashes
 	source=${source%/}
 	source=${source#/}
 	# tidy up if partition is still mounted in /media
-	umount /media/$source &> /dev/null
+#	umount /media/$source &> /dev/null
+	RSYNCOPTS="-axHAX"
+	if [[ $FSTYPE == "nfs" ]]; then ## ACLs and xattrs are not supported
+		RSYNCOPTS="-axH"
+	fi
 	EXCLUDES='--exclude=.gvfs'
  	if [ $source == "system" ]; then
 		# directories generated by the system
@@ -179,14 +227,16 @@ for source in ${PARTSTOBACKUP[@]}; do
 
 		# the system partition is mounted somewhere - find the device it is on
 		SRCDEV=$(findmnt -l | grep "^/\s.*/dev" | sed 's/^\S*\s*\(\S*\).*/\1/')
+		SRCROOT="/"
 	else
 		SRCDEV=$(findmnt -l | grep "^/$source\s.*/dev" | sed 's/^\S*\s*\(\S*\).*/\1/')
+		SRCROOT="/$source/"
 	fi
 
 ###	uncomment the following to avoid backing up the rubbish bin (when there is one)
 	#EXCLUDES+=' --exclude=Trash*/ --exclude=.Trash*/'
 
-	echo -e "\n$source is on $SRCDEV"
+	echo -e "\n$source is on $SRCDEV - copying from $SRCROOT"
 
 	if ! [ -d "$BACKUPDIRNOW"/$source ]; then
 		mkdir -p "$BACKUPDIRNOW"/$source
@@ -208,28 +258,28 @@ for source in ${PARTSTOBACKUP[@]}; do
 
 	START=$(date +%s)
 	echo Backing up $source partition to "$BACKUPDIRNOW"/$source
-	cd /media
-	if ! [[ $SRCDEV == "" ]]; then
-		# source is already mounted, but we'll mount it again in /media
-		# to avoid recursing into nested mountpoints
-		if ! [ -d $source ]; then mkdir $source; fi
-		if [ $(ls $source | wc -l) == 0 ]; then mount $SRCDEV $source || exit 1; fi
-		# else we assume it's already mounted, (eg if last backup didn't complete)
-		# but lets just check
-		if ! findmnt -l | grep "^/media/$source " > /dev/null; then
-			echo /media/$source is not a mount point
-			exit 1
-		fi
-	else
-		echo Source is not a device - not currently supported
-		continue
-	fi
+#	cd /media
+#	if ! [[ $SRCDEV == "" ]]; then
+#		# source is already mounted, but we'll mount it again in /media
+#		# to avoid recursing into nested mountpoints
+#		if ! [ -d $source ]; then mkdir $source; fi
+#		if [ $(ls $source | wc -l) == 0 ]; then mount $SRCDEV $source || exit 1; fi
+#		# else we assume it's already mounted, (eg if last backup didn't complete)
+#		# but lets just check
+#		if ! findmnt -l | grep "^/media/$source " > /dev/null; then
+#			echo /media/$source is not a mount point
+#			exit 1
+#		fi
+#	else
+#		echo Source is not a device - not currently supported
+#		continue
+#	fi
 
 	if [ ! "$BACKUPDIRLAST" ] || [ ! -d "$BACKUPDIRLAST/$source" ]; then
 		# no previous backup here
 		echo Backup directory is empty - making first copy
-		echo rsync -aHAX $EXCLUDES /media/$source/ "$BACKUPDIRNOW/$source" &>> "$LOGFILE"
-		rsync -aHAX "$EXCLUDES" /media/$source/ "$BACKUPDIRNOW/$source" --log-file="$LOGFILE"
+		echo rsync "$RSYNCOPTS" $EXCLUDES $SRCROOT "$BACKUPDIRNOW/$source" &>> "$LOGFILE"
+		rsync "$RSYNCOPTS" "$EXCLUDES" "$SRCROOT" "$BACKUPDIRNOW/$source" --log-file="$LOGFILE" || DieNicely $source "rsync failed while making first backup"
 	else
 		echo There are $BACKUPCOUNT previous backups
 		echo Found latest backup at $BACKUPDIRLAST/$source
@@ -238,26 +288,26 @@ for source in ${PARTSTOBACKUP[@]}; do
 		# if more than one backup in one day, results will be appended
 		if [ -e "$LOGFILE" ]; then echo >> "$LOGFILE"; fi
 ###		the rsync -c option does a checksum comparison on each file - slow but sure
-		echo rsync -aHAXc "$EXCLUDES" --compare-dest="$BACKUPDIRLAST/$source" "/media/$source/" "$BACKUPDIRNOW/$source" >> "$LOGFILE"
-		rsync -aHAXc "$EXCLUDES" --compare-dest="$BACKUPDIRLAST/$source" "/media/$source/" "$BACKUPDIRNOW/$source" --log-file="$LOGFILE"
+		echo rsync "$RSYNCOPTS"c "$EXCLUDES" --compare-dest="$BACKUPDIRLAST/$source" "$SRCROOT" "$BACKUPDIRNOW/$source" >> "$LOGFILE"
+		rsync "$RSYNCOPTS"c "$EXCLUDES" --compare-dest="$BACKUPDIRLAST/$source" "$SRCROOT" "$BACKUPDIRNOW/$source" --log-file="$LOGFILE"  || DieNicely $source "rsync failed while making incremental backup"
 ###		keep a copy of the new and changed files (optional - comment out if not needed)
 		echo Making a copy of the new and changed files in "$BACKUPDIRNOW/$source-delta"
-		rsync -amHAX --link-dest="$BACKUPDIRNOW/$source" "$BACKUPDIRNOW/$source/" "$BACKUPDIRNOW/$source-delta"
+		rsync "$RSYNCOPTS"m --link-dest="$BACKUPDIRNOW/$source" "$BACKUPDIRNOW/$source/" "$BACKUPDIRNOW/$source-delta" --log-file="$LOGFILE"  || DieNicely $source "rsync failed while recording changes"
 		# link all the files from the last backup
 		echo Cloning unchanged files from previous backup
-		cp -al --no-clobber "$BACKUPDIRLAST/$source" "$BACKUPDIRNOW"
+		cp -al --no-clobber "$BACKUPDIRLAST/$source" "$BACKUPDIRNOW"  || DieNicely $source "failed while linking previous backup"
 		# and remove files which were removed from the source to end up with an exact copy of the source
 		# --existing prevents new files being added (since the first rsync above)
 		# and --ignore-existing stops changes to the backup which might propogate to previous backups
 		echo Deleting files no longer on source
 		echo >> "$LOGFILE"
-		echo rsync -aHAX "$EXCLUDES" --existing --ignore-existing --delete --delete-excluded "/media/$source/" "$BACKUPDIRNOW/$source" >> "$LOGFILE"
-		rsync -aHAX "$EXCLUDES" --existing --ignore-existing --delete --delete-excluded /media/$source/ "$BACKUPDIRNOW/$source" --log-file="$LOGFILE"
+		echo rsync "$RSYNCOPTS" "$EXCLUDES" --existing --ignore-existing --delete --delete-excluded "$SRCROOT" "$BACKUPDIRNOW/$source" >> "$LOGFILE"
+		rsync "$RSYNCOPTS" "$EXCLUDES" --existing --ignore-existing --delete --delete-excluded "$SRCROOT" "$BACKUPDIRNOW/$source" --log-file="$LOGFILE"  || DieNicely $source "rsync failed while deleting files"
 	fi
 
-	cd /media
-	umount /media/$source
-	rmdir /media/$source
+#	cd /media
+#	umount /media/$source
+#	rmdir /media/$source
 	ELAPSED=$(($(date +%s) - $START))
 	echo Time to back up $source: $(date -d@${ELAPSED} -u +%Hh:%Mm:%Ss)
 done
@@ -270,5 +320,7 @@ SPACEONDRIVENOW=$(df --sync --output=avail "$DRIVE" | grep -o "[[:digit:]]*")
 SPACEUSED=$(($SPACEONDRIVE + $SPACEFREED - $SPACEONDRIVENOW))
 printf "\n%'u%s\n" $SPACEUSED " KiB used in this backup"
 printf "%'u%s\n" $SPACEONDRIVENOW " KiB available on drive"
+
+ToggleServices "start"
 
 echo -e "All done!\n"

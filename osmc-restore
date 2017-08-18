@@ -10,7 +10,7 @@
 
 # Any comments or bug reports to discourse.osmc.tv.
 
-VERSION='0.1.4'
+VERSION='0.1.5' ## vero support and more robust formatting
 set +x
 # check if this is being run as root
 if (( $(/usr/bin/id -u) != 0 )); then
@@ -33,33 +33,22 @@ elif [ "$3" == "-f" ]; then
 	FORMAT=1
 fi
 
-if [ -z $@ ]; then
-	echo Usage: "$( basename "${BASH_SOURCE[0]}") [-f] backupdir|/[system|boot] [restore_device][partition]"
+if [ -z $1 ]; then
+	echo Usage: "$( basename "${BASH_SOURCE[0]}") [-f] source_device|backupdir|/[system|boot] [restore_device][partition]"
 	echo Example: "$( basename "${BASH_SOURCE[0]}") /media/backup/2017-04-01 sdc"
+	echo Example: "$( basename "${BASH_SOURCE[0]}") sdb sdc"
 	exit 1
 fi
 
 CLONE=0
 LIVE=0
 PARTStoRESTORE=(boot system)
-# check is we are only copying one partition
-for source in ${PARTStoRESTORE[@]}; do
-	if [[ "$BACKUPDIR" =~ "$source"$ ]]; then
-		#echo $BACKUPDIR
-		PARTStoRESTORE=($source)
-		BACKUPDIR=${BACKUPDIR%/$source}
-		#echo now $BACKUPDIR
-		if [ -z "$BACKUPDIR" ]; then
-			CLONE=1
-			LIVE=1
-			BACKUPDIR=/
-		fi
-	fi
-done
+
 # see if $BACKUPDIR is a device
 if [[ $(lsblk -lo NAME,TYPE | grep "$BACKUPDIR.*disk"$ ) ]]; then
 	CLONE=1
-	echo Going to copy $BACKUPDIR
+	BACKUPDEV=($(lsblk -lo NAME,TYPE | grep "$BACKUPDIR.*disk"$ ))
+	echo Going to copy ${BACKUPDEV[0]}
 elif ! [[ "$BACKUPDIR" =~ ^/ ]]; then
 	# make BACKUPDIR path absolute
 	BACKUPDIR="$PWD/$BACKUPDIR"
@@ -73,6 +62,36 @@ else
 	else
 		# remove a trailing slash
 		BACKUPDIR=${BACKUPDIR%/}
+	fi
+fi
+
+# check if we are only copying one partition
+for source in ${PARTStoRESTORE[@]}; do
+	if [[ "$BACKUPDIR" =~ "$source"$ ]]; then
+		echo $BACKUPDIR
+		PARTStoRESTORE=($source)
+		BACKUPDIR=${BACKUPDIR%/$source}
+		echo now $BACKUPDIR
+		if [ -z "$BACKUPDIR" ]; then
+			CLONE=1
+			LIVE=1
+			BACKUPDIR=/
+		fi
+	fi
+done
+
+VERO=0
+if [[ $BACKUPDIR =~ "vero" ]]; then 
+	VERO=1
+elif [ $(ls "$BACKUPDIR/system/boot" | wc -l) \> 0 ]; then
+	VERO=1
+fi
+
+if (($VERO)); then
+	PARTStoRESTORE=(system)
+	if (($LIVE)); then
+		echo Can\'t clone live vero partition
+		exit 0
 	fi
 fi
 
@@ -91,33 +110,23 @@ if [ -d "$BACKUPDIR" ] || (($CLONE)); then
 					SRCDEV=$(findmnt -l | grep "^/$source\s.*/dev" | sed 's/^\S*\s*\(\S*\).*/\1/')
 				fi
 			else
+				# partition is defined by device ID so re-mount it
 				if [ $source == "system" ]; then
 					SRCDEV=/dev/$BACKUPDIR2
-					umount /dev/$BACKUPDIR2
 				elif [ $source == "boot" ]; then
 					SRCDEV=/dev/$BACKUPDIR1
-					umount /dev/$BACKUPDIR1
 				fi
-			fi
-			cd /media
-			mkdir -p sdcard
-			cd sdcard
-			if ! [[ $SRCDEV == "" ]]; then
-				# source is already mounted, but we'll mount it again in /media
-				# to avoid recursing into nested mountpoints
-				if ! [ -d $source ]; then mkdir $source; fi
-				if [ $(ls $source | wc -l) == 0 ]; then mount $SRCDEV $source || exit 1; fi
+				umount $SRCDEV || echo Cannot unmount $SRCDEV; exit 1
+				mkdir -p /media/sdcard/$source
+				if [ $(ls $source | wc -l) == 0 ]; then mount $SRCDEV /media/sdcard/$source || exit 1; fi
 				# else we assume it's already mounted, (eg if last backup didn't complete)
-				# but lets just check
+				# but lets just check (SHOULD'NTT NEED THIS, NOW)
 				if ! findmnt -l | grep "^/media/sdcard/$source " &> /dev/null; then
 					echo /media/sdcard/$source is not a mount point
 					exit 1
 				fi
-			else
-				echo Source is not a device - not currently supported
-				continue
+				BACKUPDIR=/media/sdcard
 			fi
-			BACKUPDIR=/media/sdcard
 		fi
 		if [ -d "$BACKUPDIR"/$source ]; then
 			BACKUPFOUND=$(($BACKUPFOUND + 1))
@@ -138,7 +147,7 @@ while ! lsblk | grep "^$MEDIA " > /dev/null; do
 	lsblk -lo NAME,SIZE,TYPE | grep "disk"$
 	read -rp "Please enter the device name of the media to restore to ... " MEDIA
 	echo
-	if ! findmnt -l "/dev/$MEDIA"1 | grep "/media"  > /dev/null; then
+	if findmnt -l "/dev/$MEDIA"1 > /dev/null && ! findmnt -l "/dev/$MEDIA"1 | grep "/media"  > /dev/null; then
 		read -n1 -rsp "/dev/$MEDIA is mounted but not removable - are you sure (Y/N)?" ANSWER
 		if ! [[ $ANSWER =~ [Yy] ]]; then
 			echo
@@ -160,7 +169,7 @@ if [[ $MEDIA =~ "(.*)([0-9])"$ ]]; then
 	fi
 fi
 
-if (($FORMAT)); then
+function format(){
 	read -n1 -rsp "Going to erase all of /dev/$MEDIA, press Y to continue ... " ANSWER
 	if ! [[ $ANSWER =~ [Yy] ]]; then
 		echo
@@ -171,12 +180,15 @@ if (($FORMAT)); then
 	fi
 
 	if findmnt -l "/dev/$MEDIA"1 > /dev/null; then
+		echo "/dev/$MEDIA"1 is mounted
 		PART=1
 		while findmnt -l "/dev/$MEDIA$PART" > /dev/null; do
 			if ! umount "/dev/$MEDIA$PART"; then
 				echo
 				echo Problem unmounting /dev/$MEDIA$PART
 				exit 1
+			else
+				echo Unmounted "/dev/$MEDIA$PART"
 			fi
 			PART=$(($PART + 1))
 		done
@@ -192,103 +204,194 @@ if (($FORMAT)); then
 	fi
 
 	echo Formatting SD card $MEDIA
-	parted -s /dev/$MEDIA mklabel msdos mkpart primary fat32 $BLANK $PART1 \
-		&& parted -s /dev/$MEDIA -- mkpart primary ext4 $PART1 -1s
-	
+	if (($VERO)); then
+		parted -s /dev/$MEDIA -- mklabel msdos mkpart primary fat32 $BLANK -1s
+	else
+		parted -s /dev/$MEDIA mklabel msdos mkpart primary fat32 $BLANK $PART1 \
+			&& parted -s /dev/$MEDIA -- mkpart primary ext4 $PART1 -1s
+	fi
 	# wait for the system to register the new partitions
-	while ! [ -e /dev/"$MEDIA"1 ]; do sleep 1; done
+#	while ! [ -e /dev/"$MEDIA"1 ]; do
+#		echo Waiting for /dev/"$MEDIA"
+#		sleep 1
+#	done
+	# refresh the partitions in the kernel, but that also mounts them
+	# if there was a filesystem there
+	partprobe /dev/"$MEDIA"; umount /dev/"$MEDIA"1
 	parted /dev/"$MEDIA" set 1 lba on
 	mkfs.vfat -F 32 -s 4 -I /dev/"$MEDIA"1
-	while ! [ -e /dev/"$MEDIA"2 ]; do sleep 1; done
-	mkfs.ext4 /dev/"$MEDIA"2
-fi
+	if ! (($VERO)); then
+#		while ! [ -e /dev/"$MEDIA"2 ]; do sleep 1; done
+		umount /dev/"$MEDIA"2
+		mkfs.ext4 /dev/"$MEDIA"2
+	fi
+	# run this again to refresh things
+	partprobe &> /dev/null
+}
 
-# check what partitions we have
-PARTS=($(lsblk -blo NAME,FSTYPE,SIZE | grep "$MEDIA\S\s"))
-#echo Partitions found: ${PARTS[@]}
+if (($FORMAT)); then format; fi
 
 START=$(date +%s)
-for source in ${PARTStoRESTORE[@]}; do
-	PARTNAME=
-	if [ $source == "boot" ]; then
-		PARTTYPE=vfat; PARTSIZEMIN=244000000
-		CPPARAM="--no-preserve=ownership"
-	elif [ $source == "system" ]; then
-		PARTTYPE=ext ; PARTSIZEMIN=($(du -sB1 "$BACKUPDIR/$source"))
-		CPPARAM=
-		printf "%'u%s\n" $(($PARTSIZEMIN / 1024)) "KiB in $source backup"
-	fi
-	for partindex in $(seq 1 3 "$((${#PARTS[@]} - 2))"); do
-		# do it only once if partition number has been specified
-		if [ $PARTNO != "0" ]; then
-			if [ $partindex \> "$(( ($PARTNO - 1)*3 + 1 ))" ]; then break
-			elif [ $partindex \< "$(( ($PARTNO - 1)*3 + 1 ))" ]; then continue
-			fi
-		fi
-		if [[ ${PARTS[$partindex]} =~ "$PARTTYPE" ]]; then
-			PARTNAME=${PARTS[$(($partindex - 1))]}; #echo $PARTNAME
-			PARTSIZE=${PARTS[$(($partindex + 1))]}; #echo $PARTSIZE
-			if (( $PARTSIZE < $PARTSIZEMIN )); then
-				printf "%s%'u%s\n" "$PARTTYPE partition at $PARTNAME may be too small (" $(($PARTSIZE / 1024)) " KiB)"
-				read -n1 -rsp "Press Y to continue, any other key to skip" ANSWER
-				if ! [[ $ANSWER =~ [Yy] ]]; then
-					echo
-					echo Skipping $PARTNAME partition ....
-					PARTNAME=skip
-					continue
-				else
-					break
-				fi
-			else
-				printf "%s%'u%s\n" "Found $PARTTYPE partition at $PARTNAME with enough space (" $(($PARTSIZE / 1024)) " KiB)"
-				read -n1 -rsp "Press Y to write $source to this partition, any other key to skip" ANSWER
-				if ! [[ $ANSWER =~ [Yy] ]]; then
-					echo
-					echo Skipping $PARTNAME partition ....
-					PARTNAME=skip
-					continue
-				else
-					break
-				fi
-			fi
-		fi
-	done
-	if [ -z $PARTNAME ]; then
-		echo "Can't find a suitable $PARTTYPE partition for $source"
-		continue
-	fi
-	if [ $PARTNAME == "skip" ]; then continue; fi
 
-	# check if target is already mounted
-	TARGET=$(findmnt -lo SOURCE,TARGET "/dev/$PARTNAME" | grep '(media)|(mnt)' | sed 's/^.*\/\(media\)|\(mnt\)\/\(.*\)/\/\1\/\3/')
-	echo
-	echo $TARGET
-	if [ -z "$TARGET" ]; then
-		cd /media
-		mkdir $source
-		mount /dev/"$PARTNAME" $source
+# need to make vero filesystem before checking space on target to get proper size
+if (($VERO)); then
+	if [ -f "$BACKUPDIR/filesystem.tar.xz" ]; then
+		read -n1 -rsp "$BACKUPDIR/filesystem.tar.xz exists, press Y to overwrite, N to keep " ANSWER
+		if [[ $ANSWER =~ [Yy] ]]; then
+			rm "$BACKUPDIR/filesystem.tar.xz"
+		fi
+		echo
+	fi
+	if ! [ -f "$BACKUPDIR/filesystem.tar.xz" ]; then
+		# zip up the system files
+		echo Preparing to make tarball of system files
+		SYSTEMSIZE=($(du -sB1 "$BACKUPDIR/$source"))
+		printf "%s%'u%s\n" "Packing " $((${SYSTEMSIZE[0]} / 1024 / 1024)) " MiB of system files - could take a while...."
+		cd $BACKUPDIR/system/
+		tar -I "xz -0v" -cf "$BACKUPDIR/filesystem.tar.xz" *
+	fi
+fi
+
+
+function restore(){
+	# check what partitions we have
+	PARTS=($(lsblk -blo NAME,FSTYPE,SIZE | grep "$MEDIA\S\s"))
+	#echo Partitions found: ${PARTS[@]}
+	for source in ${PARTStoRESTORE[@]}; do
+		PARTNAME=
+		if [ $source == "boot" ]; then
+			PARTTYPE=vfat; PARTSIZEMIN=244000000
+			CPPARAM="--no-preserve=ownership"
+		elif [ $source == "system" ]; then
+			if (($VERO)); then
+				PARTTYPE=vfat
+				PARTSIZEMIN=($(du -sB1 "$BACKUPDIR/filesystem.tar.xz"))
+				# add size of kernel.img and dtb.img
+				PARTSIZEMIN[0]=$((${PARTSIZEMIN[0]} + 30000000 ))
+				CPPARAM="--no-preserve=ownership"
+			else
+				PARTTYPE=ext
+				PARTSIZEMIN=($(du -sB1 "$BACKUPDIR/$source"))
+				CPPARAM="--"
+			fi
+			printf "%'u%s\n" $((${PARTSIZEMIN[0]} / 1024)) "KiB in $source backup"
+		fi
+		for partindex in $(seq 1 3 "$((${#PARTS[@]} - 2))"); do
+			# do it only once if partition number has been specified
+			if [ $PARTNO != "0" ]; then
+				if [ $partindex \> "$(( ($PARTNO - 1)*3 + 1 ))" ]; then break
+				elif [ $partindex \< "$(( ($PARTNO - 1)*3 + 1 ))" ]; then continue
+				fi
+			fi
+			if [[ ${PARTS[$partindex]} =~ "$PARTTYPE" ]]; then
+				PARTNAME=${PARTS[$(($partindex - 1))]}; #echo $PARTNAME
+				PARTSIZE=${PARTS[$(($partindex + 1))]}; #echo $PARTSIZE
+				if (( $PARTSIZE < $PARTSIZEMIN )); then
+					printf "%s%'u%s\n" "$PARTTYPE partition at $PARTNAME may be too small (" $(($PARTSIZE / 1024)) " KiB)"
+					read -n1 -rsp "Press Y to continue, any other key to skip" ANSWER
+					if ! [[ $ANSWER =~ [Yy] ]]; then
+						echo
+						echo Skipping $PARTNAME partition ....
+						PARTNAME=skip
+						continue
+					else
+						break
+					fi
+				else
+					printf "%s%'u%s\n" "Found $PARTTYPE partition at $PARTNAME with enough space (" $(($PARTSIZE / 1024)) " KiB)"
+					read -n1 -rsp "Press Y to write $source to this partition, any other key to skip" ANSWER
+					if ! [[ $ANSWER =~ [Yy] ]]; then
+						echo
+						echo Skipping $PARTNAME partition ....
+						PARTNAME=skip
+						continue
+					else
+						break
+					fi
+				fi
+			fi
+		done
+		if [ -z $PARTNAME ]; then
+			echo "Can't find a suitable $PARTTYPE partition for $source"
+			continue
+		fi
+		if [ $PARTNAME == "skip" ]; then continue; fi
+
+		# check if target is already mounted - it will be if we've just formatted it
+		TARGET=$(findmnt -lo SOURCE,TARGET "/dev/$PARTNAME" | grep "[(media)|(mnt)]") # | sed 's/^.*\/[\(media\)|\(mnt\)]\/\(.*\)/\/\1\/\3/')
+		TARGET=${TARGET#/dev/"$PARTNAME "}
+		echo
+		#echo target: $TARGET
+		if ! [ -z $TARGET ] && ! $(echo "$TARGET" | grep "/media"  > /dev/null); then
+			read -n1 -rsp "/dev/$PARTNAME is mounted but not removable - are you sure (Y/N)?" ANSWER
+			if ! [[ $ANSWER =~ [Yy] ]]; then
+				echo
+				echo Aborting ....
+				exit 0
+			else
+				echo
+			fi
+		fi
+		# tried to use an existing mount but safer to do it this way
+		if ! [ -z "$TARGET" ]; then
+			if ! umount "$TARGET";then
+				echo Cannot unmount $TARGET - is it busy?
+				exit 1
+			fi
+		fi
+		mkdir -p /media/$source
+		#ls -al /media/$source
+		mount /dev/"$PARTNAME" /media/$source
+		#echo $(findmnt -l "/dev/$PARTNAME")
 		TARGET=/media/$source
-	elif ! $(echo "$TARGET" | grep "/media"  > /dev/null); then
-		read -n1 -rsp "/dev/$PARTNAME is mounted but not removable - are you sure (Y/N)?" ANSWER
-		if ! [[ $ANSWER =~ [Yy] ]]; then
-			echo
-			echo Aborting ....
-			exit 0
+		
+		echo erasing all files on /dev/$PARTNAME
+		if [ $(ls "$TARGET" | wc -l) \> 0 ]; then rm -r "$TARGET"/*; fi
+		if (($VERO)); then
+			echo Copying "$BACKUPDIR"/filesystem.tar.xz to /dev/$PARTNAME
+			cp "$CPPARAM" "$BACKUPDIR"/filesystem.tar.xz "$TARGET"
+			for img in kernel dtb; do
+				if [ -f "$BACKUPDIR/../$img.img" ]; then
+					echo Copying $img.img to /dev/$PARTNAME
+					cp "$BACKUPDIR/../$img.img" "$TARGET"
+				else
+					echo "Can't find $img.img in ${BACKUPDIR%/*}."
+					echo For vero, you need copies of kernel.img and dtb.img from a recent install image.
+					echo Just copy these two files onto the SD card with filesystem.tar.xz
+				fi
+			done
 		else
-			echo
+			echo Copying $BACKUPDIR/$source to /dev/$PARTNAME
+			cp -a "$CPPARAM" "$BACKUPDIR/$source/". "$TARGET"
+		fi
+		umount "$TARGET"
+		if [ -d "$TARGET" ]; then rmdir "$TARGET"; fi
+		umount /media/sdcard/$source &> /dev/null && \
+			rmdir /media/sdcard/$source &> /dev/null
+		RESTORED=$(( $RESTORED + 1 ))
+	done
+}
+
+RESTORED=0
+while [ $RESTORED \< ${#PARTStoRESTORE[@]} ]; do
+	restore
+	rmdir /media/sdcard &> /dev/null
+	if [ $RESTORED \< ${#PARTStoRESTORE[@]} ]; then
+		echo Not all partitions were restored
+		echo "Partitions on $MEDIA are as follows"
+		parted /dev/$MEDIA print
+		read -n1 -rsp "Do you want to re-format the card and try again (Y/N)?" ANSWER
+		echo
+		if [[ $ANSWER =~ [Yy] ]]; then
+			format
+			START=$(date +%s)
+		else
+			break
 		fi
 	fi
-	echo erasing all files on /dev/$PARTNAME
-	if [ $(ls "$TARGET" | wc -l) \> 0 ]; then rm -r "$TARGET"/*; fi
-	echo Copying $BACKUPDIR/$source to /dev/$PARTNAME
-	cp -a "$CPPARAM" "$BACKUPDIR/$source/". "$TARGET"
-	umount "$TARGET"
-	if [ -d "$TARGET" ]; then rmdir "$TARGET"; fi
-	umount /media/sdcard/$source &> /dev/null && \
-	rm -r /media/sdcard/$source &> /dev/null
 done
-rmdir /media/sdcard &> /dev/null
 
 ELAPSED=$(($(date +%s) - $START))
 echo Time to restore: $(date -d@${ELAPSED} -u +%Hh:%Mm:%Ss)
+
 

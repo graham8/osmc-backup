@@ -11,7 +11,7 @@
 
 # Any comments or bug reports to discourse.osmc.tv.
 
-VERSION='0.1.8rc2' ## don't backup boot separately for vero4k, don't mount devices, pause services.
+VERSION='0.1.8rc4' ## use all previous backups by date but don't count them
 
 ## *********************************************************************
 #            Set up the variables for your system
@@ -161,19 +161,29 @@ BACKUPCOUNT=0
 OLDESTKEEP=$(date -d "-$(($DAYSTOKEEP))days" +%F)
 echo -e "\nCounting and deleting backups older than $OLDESTKEEP or if more than $BACKUPSTOKEEP of them"
 if [ -d "$BACKUPDIR" ]; then
-	for i in $(ls -r "$BACKUPDIR"); do
-		if ! [[ $i =~ ^[0-9]*-[0-9]*-[0-9]*$ ]]; then
+	for i in $(ls -t "$BACKUPDIR"); do
+		# ignore directories and files without a date
+		if ! [[ $i =~ ^[0-9]*-[0-9]*-[0-9]* ]]; then
 			continue
-		elif [ "$BACKUPDIRNOW" != "$BACKUPDIR/$i" ]; then
+		elif [[ "$BACKUPDIR/$i" != "$BACKUPDIRNOW" ]]; then
 			if [ $BACKUPCOUNT == 0 ]; then
+				# this should be the most recent backup, irrespective of its name
+				echo Latest backup from $i kept
 				BACKUPDIRLAST="$BACKUPDIR/$i"
-			elif [[ $i < $OLDESTKEEP ]] || (($BACKUPCOUNT >= $BACKUPSTOKEEP - 1)); then
-				rm -r "$BACKUPDIR/$i"
-				echo Backup from $i removed
-				continue
+				BACKUPCOUNT=$(( $BACKUPCOUNT + 1 ))
+			elif [[ $i =~ ^[0-9]*-[0-9]*-[0-9]*$ ]]; then
+				# any directory with a bare date is counted
+				if [[ $i < $OLDESTKEEP ]] || (($BACKUPCOUNT >= $BACKUPSTOKEEP - 1)); then
+					echo Deleting backup from $i
+					rm -r "$BACKUPDIR/$i"
+					echo Backup from $i removed
+					continue
+				fi
+				echo Backup from $i kept
+				BACKUPCOUNT=$(( $BACKUPCOUNT + 1 ))
+			else
+				echo Backup called $i kept and not counted
 			fi
-			echo Backup from $i kept
-			BACKUPCOUNT=$(( $BACKUPCOUNT + 1 ))
 		fi
 	done
 	SPACEONDRIVE=$(df --sync --output=avail "$DRIVE" | grep -o "[[:digit:]]*")

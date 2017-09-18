@@ -83,7 +83,7 @@ done
 VERO=0
 if [[ $BACKUPDIR =~ "vero" ]]; then 
 	VERO=1
-elif [ $(ls "$BACKUPDIR/system/boot" | wc -l) \> 0 ]; then
+elif [[ $BACKUPDIR != '/' ]] && [ $(ls "$BACKUPDIR/system/boot" | wc -l) \> 0 ]; then
 	VERO=1
 fi
 
@@ -120,15 +120,15 @@ if [ -d "$BACKUPDIR" ] || (($CLONE)); then
 				mkdir -p /media/sdcard/$source
 				if [ $(ls $source | wc -l) == 0 ]; then mount $SRCDEV /media/sdcard/$source || exit 1; fi
 				# else we assume it's already mounted, (eg if last backup didn't complete)
-				# but lets just check (SHOULD'NTT NEED THIS, NOW)
+				# but lets just check (SHOULD'NT NEED THIS, NOW)
 				if ! findmnt -l | grep "^/media/sdcard/$source " &> /dev/null; then
 					echo /media/sdcard/$source is not a mount point
 					exit 1
 				fi
 				BACKUPDIR=/media/sdcard
 			fi
-		fi
-		if [ -d "$BACKUPDIR"/$source ]; then
+			BACKUPFOUND=1
+		elif [ -d "$BACKUPDIR"/$source ]; then
 			BACKUPFOUND=$(($BACKUPFOUND + 1))
 		else
 			echo There is no $source directory in $BACKUPDIR, please check
@@ -271,8 +271,14 @@ function restore(){
 				CPPARAM="--no-preserve=ownership"
 			else
 				PARTTYPE=ext
-				PARTSIZEMIN=($(du -sB1 "$BACKUPDIR/$source"))
-				CPPARAM="--"
+				if [ "$BACKUPDIR" == '/' ]; then
+					echo checking size of $BACKUPDIR
+					PARTSIZEMIN=($(du -xsB1 "$BACKUPDIR"))
+				else
+					echo checking size of "$BACKUPDIR/$source"
+					PARTSIZEMIN=($(du -xsB1 "$BACKUPDIR/$source"))
+				fi
+				CPPARAM="-x" # don't copy boot, media, mnt
 			fi
 			printf "%'u%s\n" $((${PARTSIZEMIN[0]} / 1024)) "KiB in $source backup"
 		fi
@@ -362,7 +368,11 @@ function restore(){
 			done
 		else
 			echo Copying $BACKUPDIR/$source to /dev/$PARTNAME
-			cp -a "$CPPARAM" "$BACKUPDIR/$source/". "$TARGET"
+			if [ $source == 'system' ] && [ "$BACKUPDIR" == '/' ]; then
+				cp -a "$CPPARAM" "$BACKUPDIR". "$TARGET"
+			else
+				cp -a "$CPPARAM" "$BACKUPDIR/$source/". "$TARGET"
+			fi
 		fi
 		umount "$TARGET"
 		if [ -d "$TARGET" ]; then rmdir "$TARGET"; fi

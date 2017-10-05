@@ -210,19 +210,20 @@ function format(){
 		parted -s /dev/$MEDIA mklabel msdos mkpart primary fat32 $BLANK $PART1 \
 			&& parted -s /dev/$MEDIA -- mkpart primary ext4 $PART1 -1s
 	fi
-	# wait for the system to register the new partitions
-#	while ! [ -e /dev/"$MEDIA"1 ]; do
-#		echo Waiting for /dev/"$MEDIA"
-#		sleep 1
-#	done
 	# refresh the partitions in the kernel, but that also mounts them
-	# if there was a filesystem there
-	partprobe /dev/"$MEDIA"; umount /dev/"$MEDIA"1
+	# if there was already a filesystem there
+	partprobe /dev/"$MEDIA"
+	# wait for the system to register the new partitions
+	while ! [ -e /dev/"$MEDIA"1 ]; do
+		echo Waiting for /dev/"$MEDIA"
+		sleep 1
+	done
 	parted /dev/"$MEDIA" set 1 lba on
+	umount /dev/"$MEDIA"1 2> /dev/null
 	mkfs.vfat -F 32 -s 4 -I /dev/"$MEDIA"1
 	if ! (($VERO)); then
 #		while ! [ -e /dev/"$MEDIA"2 ]; do sleep 1; done
-		umount /dev/"$MEDIA"2
+		umount /dev/"$MEDIA"2 2> /dev/null
 		mkfs.ext4 /dev/"$MEDIA"2
 	fi
 	# run this again to refresh things

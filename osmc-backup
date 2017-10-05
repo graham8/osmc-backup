@@ -11,7 +11,7 @@
 
 # Any comments or bug reports to discourse.osmc.tv.
 
-VERSION='0.1.8rc4' ## use all previous backups by date but don't count them
+VERSION='0.1.9' ## use all previous backups by date but don't count them
 
 ## *********************************************************************
 #            Set up the variables for your system

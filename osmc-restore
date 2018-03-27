@@ -10,13 +10,33 @@
 
 # Any comments or bug reports to discourse.osmc.tv.
 
-VERSION='0.1.5' ## vero support and more robust formatting
+VERSION='0.1.7' ## add check for dependencies and handle mmcblk devices
 set +x
 # check if this is being run as root
 if (( $(/usr/bin/id -u) != 0 )); then
 	echo Must be run as root!
 	exit 1
 fi
+
+# check we have xz
+if ! xz --version &> /dev/null; then
+	GETDEPENDS=1
+	echo -e "\nThis script needs xz but I can't find it\nTry: sudo apt-get install xz-utils (or similar)\n"
+fi
+
+# check we have parted
+if ! parted --version &> /dev/null; then
+	GETDEPENDS=1
+	echo -e "\nThis script needs parted but I can't find it\nTry: sudo apt-get install parted (or similar)\n"
+fi
+
+# check we have rsync
+if ! rsync --version &> /dev/null; then
+	GETDEPENDS=1
+	echo -e "\nThis script needs rsync but I can't find it\nTry: sudo apt-get install rsync (or similar)\n"
+fi
+
+if (($GETDEPENDS)); then exit 0; fi
 
 # Parse arguments
 BACKUPDIR="$1"
@@ -142,12 +162,18 @@ fi
 
 # have a look for the media to install to
 MEDIA=${MEDIA##/dev/}
+PARTPREFIX=
 while ! lsblk | grep "^$MEDIA " > /dev/null; do
 	#lsblk -l | grep "\s1\s*\S.*\sdisk" | sed 's/^\(\S*\)\s.*/\1/'
 	lsblk -lo NAME,SIZE,TYPE | grep "disk"$
 	read -rp "Please enter the device name of the media to restore to ... " MEDIA
 	echo
-	if findmnt -l "/dev/$MEDIA"1 > /dev/null && ! findmnt -l "/dev/$MEDIA"1 | grep "/media"  > /dev/null; then
+	MEDIA=${MEDIA##/dev/}
+	PARTPREFIX=
+	if [[ $MEDIA =~ mmcblk.* ]]; then
+		PARTPREFIX="p"
+	fi
+	if findmnt -l "/dev/$MEDIA$PARTPREFIX"1 > /dev/null && ! findmnt -l "/dev/$MEDIA$PARTPREFIX"1 | grep "/media"  > /dev/null; then
 		read -n1 -rsp "/dev/$MEDIA is mounted but not removable - are you sure (Y/N)?" ANSWER
 		if ! [[ $ANSWER =~ [Yy] ]]; then
 			echo
@@ -161,13 +187,18 @@ done
 
 # trim partition number if both partitions to be restored
 PARTNO=0
-if [[ $MEDIA =~ "(.*)([0-9])"$ ]]; then
-	if [ ${#PARTStoRESTORE[@]} \> 1 ] || (($FORMAT)); then
-		MEDIA=${BASH_REMATCH[1]}
-	else
-		PARTNO=${BASH_REMATCH[2]}
-	fi
+if [[ $MEDIA =~ (mmcblk[0-9])p([0-9])$ ]]; then
+	DEVICE=${BASH_REMATCH[1]}
+	PARTNO=${BASH_REMATCH[2]}
+elif ! [[ $MEDIA =~ mmcblk.* ]] && [[ $MEDIA =~ (.*)([0-9])$ ]]; then
+	DEVICE=${BASH_REMATCH[1]}
+	PARTNO=${BASH_REMATCH[2]}
 fi
+if [ ${#PARTStoRESTORE[@]} \> 1 ] || (($FORMAT)); then
+		MEDIA=$DEVICE
+		PARTNO=0
+fi
+
 
 function format(){
 	read -n1 -rsp "Going to erase all of /dev/$MEDIA, press Y to continue ... " ANSWER
@@ -179,16 +210,16 @@ function format(){
 		echo
 	fi
 
-	if findmnt -l "/dev/$MEDIA"1 > /dev/null; then
-		echo "/dev/$MEDIA"1 is mounted
+	if findmnt -l "/dev/$MEDIA$PARTPREFIX"1 > /dev/null; then
+		echo "/dev/$MEDIA$PARTPREFIX"1 is mounted
 		PART=1
-		while findmnt -l "/dev/$MEDIA$PART" > /dev/null; do
-			if ! umount "/dev/$MEDIA$PART"; then
+		while findmnt -l "/dev/$MEDIA$PARTPREFIX$PART" > /dev/null; do
+			if ! umount "/dev/$MEDIA$PARTPREFIX$PART"; then
 				echo
-				echo Problem unmounting /dev/$MEDIA$PART
+				echo Problem unmounting /dev/$MEDIA$PARTPREFIX$PART
 				exit 1
 			else
-				echo Unmounted "/dev/$MEDIA$PART"
+				echo Unmounted "/dev/$MEDIA$PARTPREFIX$PART"
 			fi
 			PART=$(($PART + 1))
 		done
@@ -214,17 +245,17 @@ function format(){
 	# if there was already a filesystem there
 	partprobe /dev/"$MEDIA"
 	# wait for the system to register the new partitions
-	while ! [ -e /dev/"$MEDIA"1 ]; do
+	while ! [ -e /dev/"$MEDIA$PARTPREFIX"1 ]; do
 		echo Waiting for /dev/"$MEDIA"
 		sleep 1
 	done
 	parted /dev/"$MEDIA" set 1 lba on
-	umount /dev/"$MEDIA"1 2> /dev/null
-	mkfs.vfat -F 32 -s 4 -I /dev/"$MEDIA"1
+	umount /dev/"$MEDIA$PARTPREFIX"1 2> /dev/null
+	mkfs.vfat -F 32 -s 4 -I /dev/"$MEDIA$PARTPREFIX"1
 	if ! (($VERO)); then
 #		while ! [ -e /dev/"$MEDIA"2 ]; do sleep 1; done
-		umount /dev/"$MEDIA"2 2> /dev/null
-		mkfs.ext4 /dev/"$MEDIA"2
+		umount /dev/"$MEDIA$PARTPREFIX"2 2> /dev/null
+		mkfs.ext4 /dev/"$MEDIA$PARTPREFIX"2
 	fi
 	# run this again to refresh things
 	partprobe &> /dev/null
@@ -244,20 +275,24 @@ if (($VERO)); then
 		echo
 	fi
 	if ! [ -f "$BACKUPDIR/filesystem.tar.xz" ]; then
+		### specify any space hogging directory not needed to boot the image
+		# eg home/osmc/Videos
+		BIGDIR="home/osmc/GitProjects"
 		# zip up the system files
 		echo Preparing to make tarball of system files
-		SYSTEMSIZE=($(du -sB1 "$BACKUPDIR/$source"))
-		printf "%s%'u%s\n" "Packing " $((${SYSTEMSIZE[0]} / 1024 / 1024)) " MiB of system files - could take a while...."
 		cd $BACKUPDIR/system/
-		tar -I "xz -0v" -cf "$BACKUPDIR/filesystem.tar.xz" *
+		SYSTEMSIZE=($(du -sB1 --exclude="$BIGDIR" "$BACKUPDIR/system"))
+		printf "%s%'u%s\n" "Packing " $((${SYSTEMSIZE[0]} / 1024 / 1024)) " MiB of system files - could take a while...."
+		tar -I "xz -0 -v" --exclude="$BIGDIR" -cf "$BACKUPDIR/filesystem.tar.xz" *
 	fi
 fi
 
 
 function restore(){
 	# check what partitions we have
-	PARTS=($(lsblk -blo NAME,FSTYPE,SIZE | grep "$MEDIA\S\s"))
-	#echo Partitions found: ${PARTS[@]}
+	PARTS=($(lsblk -blo NAME,FSTYPE,SIZE | grep "$MEDIA$PARTPREFIX\S\s"))
+	echo $PARTPREFIX
+	echo Partitions found: ${PARTS[@]}
 	for source in ${PARTStoRESTORE[@]}; do
 		PARTNAME=
 		if [ $source == "boot" ]; then
@@ -291,8 +326,8 @@ function restore(){
 				fi
 			fi
 			if [[ ${PARTS[$partindex]} =~ "$PARTTYPE" ]]; then
-				PARTNAME=${PARTS[$(($partindex - 1))]}; #echo $PARTNAME
-				PARTSIZE=${PARTS[$(($partindex + 1))]}; #echo $PARTSIZE
+				PARTNAME=${PARTS[$(($partindex - 1))]}; echo $PARTNAME
+				PARTSIZE=${PARTS[$(($partindex + 1))]}; echo $PARTSIZE
 				if (( $PARTSIZE < $PARTSIZEMIN )); then
 					printf "%s%'u%s\n" "$PARTTYPE partition at $PARTNAME may be too small (" $(($PARTSIZE / 1024)) " KiB)"
 					read -n1 -rsp "Press Y to continue, any other key to skip" ANSWER
@@ -352,9 +387,9 @@ function restore(){
 		#echo $(findmnt -l "/dev/$PARTNAME")
 		TARGET=/media/$source
 		
-		echo erasing all files on /dev/$PARTNAME
-		if [ $(ls "$TARGET" | wc -l) \> 0 ]; then rm -r "$TARGET"/*; fi
 		if (($VERO)); then
+			echo erasing all files on /dev/$PARTNAME
+			if [ $(ls "$TARGET" | wc -l) \> 0 ]; then rm -r "$TARGET"/*; fi
 			echo Copying "$BACKUPDIR"/filesystem.tar.xz to /dev/$PARTNAME
 			cp "$CPPARAM" "$BACKUPDIR"/filesystem.tar.xz "$TARGET"
 			for img in kernel dtb; do
@@ -368,11 +403,24 @@ function restore(){
 				fi
 			done
 		else
-			echo Copying $BACKUPDIR/$source to /dev/$PARTNAME
 			if [ $source == 'system' ] && [ "$BACKUPDIR" == '/' ]; then
-				cp -a "$CPPARAM" "$BACKUPDIR". "$TARGET"
+				echo Copying root directory to /dev/$PARTNAME
+				EXCLUDES='--exclude=.gvfs'
+				# directories generated by the system
+				EXCLUDES+=' --exclude=/dev/* --exclude=/proc/* --exclude=/sys/* --exclude=/run/* --exclude=/tmp/*'
+				# you probably don't want this directory - the equivalent of Windows *.chk files
+				EXCLUDES+=' --exclude=/lost+found'
+				# these mount directories should be excluded automatically by the mount process below
+				# but just to be sure
+				EXCLUDES+=' --exclude=/mnt/* --exclude=/media/*'
+				###		you may like to uncomment the next line - these directories should be unnecessary for a restore
+				#EXCLUDES+=' --exclude=/var/cache/* --exclude=/var/run/* --exclude=/var/tmp/*'
+				#cp -a "$CPPARAM" "$BACKUPDIR". "$TARGET"
+				rsync -axcH "$EXCLUDES" --delete --delete-excluded "$BACKUPDIR" "$TARGET"
 			else
-				cp -a "$CPPARAM" "$BACKUPDIR/$source/". "$TARGET"
+				echo Copying $BACKUPDIR/$source to /dev/$PARTNAME
+				#cp -a "$CPPARAM" "$BACKUPDIR/$source/". "$TARGET"
+				rsync -axcH --delete "$BACKUPDIR/$source/" "$TARGET"
 			fi
 		fi
 		umount "$TARGET"

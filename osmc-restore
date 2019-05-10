@@ -10,7 +10,7 @@
 
 # Any comments or bug reports to discourse.osmc.tv.
 
-VERSION='0.1.9' ## much improved for Vero
+VERSION='0.1.10' ## better handling after format
 #set -x
 # check if this is being run as root
 if (( $(/usr/bin/id -u) != 0 )); then
@@ -176,7 +176,7 @@ while ! lsblk | grep "^$MEDIA " > /dev/null; do
 		PARTPREFIX="p"
 	fi
 	if findmnt -l "/dev/$MEDIA$PARTPREFIX"1 > /dev/null && ! findmnt -l "/dev/$MEDIA$PARTPREFIX"1 | grep "/media"  > /dev/null; then
-		read -n1 -rsp "/dev/$MEDIA is mounted but not removable - are you sure (Y/N)?" ANSWER
+		read -n1 -rsp "/dev/$MEDIA is mounted but not removable - are you sure (Y/N)? " ANSWER
 		if ! [[ $ANSWER =~ [Yy] ]]; then
 			echo
 			echo Aborting ....
@@ -241,7 +241,7 @@ function format(){
 		PART1=256MiB
 	fi
 
-	if [ 'p' == $PARTPREFIX ]; then
+	if [[ $MEDIA =~ "mmcblk" ]]; then
 		echo Formatting SD card $MEDIA
 	else
 		echo Formatting USB stick $MEDIA
@@ -269,6 +269,10 @@ function format(){
 	mkfs.ext4 /dev/"$MEDIA$PARTPREFIX"2
 	# run this again to refresh things
 	partprobe /dev/"$MEDIA" &> /dev/null
+	while ! [ -e /dev/"$MEDIA$PARTPREFIX"1 ]; do
+		echo Waiting for /dev/"$MEDIA"
+		sleep 1
+	done
 }
 
 if (($FORMAT)); then format; fi
@@ -312,7 +316,7 @@ function restore(){
 				PARTSIZE=${PARTS[$(($partindex + 1))]}; #echo $PARTSIZE
 				if (( $PARTSIZE < $PARTSIZEMIN )); then
 					printf "%s%'u%s\n" "$PARTTYPE partition at $PARTNAME may be too small (" $(($PARTSIZE / 1024)) " KiB)"
-					read -n1 -rsp "Press Y to continue, any other key to skip" ANSWER
+					read -n1 -rsp "Press Y to continue, any other key to skip: " ANSWER
 					if ! [[ $ANSWER =~ [Yy] ]]; then
 						echo
 						echo Skipping $PARTNAME partition ....
@@ -323,7 +327,7 @@ function restore(){
 					fi
 				elif [ $1 != "dry" ]; then
 					printf "%s%'u%s\n" "Found $PARTTYPE partition at $PARTNAME with enough space (" $(($PARTSIZE / 1024)) " KiB)"
-					read -n1 -rsp "Press Y to write $source to this partition, any other key to skip" ANSWER
+					read -n1 -rsp "Press Y to write $source to this partition, any other key to skip: " ANSWER
 					if ! [[ $ANSWER =~ [Yy] ]]; then
 						echo
 						echo Skipping $PARTNAME partition ....
@@ -337,7 +341,8 @@ function restore(){
 			fi
 		done
 		if [ -z $PARTNAME ]; then
-			echo "Can't find a suitable $PARTTYPE partition for $source"
+			echo "Cannot find a suitable $PARTTYPE partition for $source"
+			echo
 			continue
 		fi
 		if [ $PARTNAME == "skip" ]; then continue; fi
@@ -350,7 +355,7 @@ function restore(){
 		echo
 		#echo target: $TARGET
 		if ! [ -z $TARGET ] && ! $(echo "$TARGET" | grep "/media"  > /dev/null); then
-			read -n1 -rsp "/dev/$PARTNAME is mounted but not removable - are you sure (Y/N)?" ANSWER
+			read -n1 -rsp "/dev/$PARTNAME is mounted but not removable - are you sure (Y/N)? " ANSWER
 			if ! [[ $ANSWER =~ [Yy] ]]; then
 				echo
 				echo Aborting ....
@@ -457,20 +462,21 @@ RESTORED=0
 PARTSFOUND=0
 while [ $PARTSFOUND \< ${#PARTStoRESTORE[@]} ]; do
 	# check what partitions we have
-	PARTS=($(lsblk -blo NAME,FSTYPE,SIZE | grep "$MEDIA$PARTPREFIX\S\s"))
+	PARTS=($(lsblk -blo NAME | grep "$MEDIA$PARTPREFIX\S\s"))
 	echo Looking for existing partitions on $DEVICE
-	echo Partitions found: $((${#PARTS[@]}/3)) ${PARTS[@]}
+	echo Partitions found: ${#PARTS[@]} ${PARTS[@]}
 	echo
-	if (( ${#PARTS[@]}/3 >= ${#PARTStoRESTORE[@]} )); then
+	if (( ${#PARTS[@]} >= ${#PARTStoRESTORE[@]} )); then
+		PARTS=($(lsblk -blo NAME,FSTYPE,SIZE | grep "$MEDIA$PARTPREFIX\S\s"))
 		restore dry
 	else
 		echo Not enough partitions on $DEVICE
 	fi
 	if [ $PARTSFOUND \< ${#PARTStoRESTORE[@]} ]; then
-		echo Could not find suitable partitions for ${PARTStoRESTORE[@]}
+		echo Cannot not find one or more suitable partitions
 		echo "Partitions on $DEVICE are as follows"
 		parted /dev/$DEVICE print
-		read -n1 -rsp "Do you want to re-format the card and try again (Y/N)?" ANSWER
+		read -n1 -rsp "Do you want to re-format the card and try again (Y/N)? " ANSWER
 		echo
 		if [[ $ANSWER =~ [Yy] ]]; then
 			format

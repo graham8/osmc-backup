@@ -11,7 +11,7 @@
 
 # Any comments or bug reports to discourse.osmc.tv.
 
-VERSION='0.1.9' ## use all previous backups by date but don't count them
+VERSION='0.1.10' ## don't keep logfile in scriptdir, exclude /opt/**/mnt
 
 ## *********************************************************************
 #            Set up the variables for your system
@@ -231,7 +231,7 @@ for source in ${PARTSTOBACKUP[@]}; do
 		EXCLUDES+=' --exclude=/lost+found'
 		# these mount directories should be excluded automatically by the mount process below
 		# but just to be sure
-		EXCLUDES+=' --exclude=/mnt/* --exclude=/media/*'
+		EXCLUDES+=' --exclude=mnt/* --exclude=/media/*'
 ###		you may like to uncomment the next line - these directories should be unnecessary for a restore
 		#EXCLUDES+=' --exclude=/var/cache/* --exclude=/var/run/* --exclude=/var/tmp/*'
 
@@ -322,7 +322,7 @@ for source in ${PARTSTOBACKUP[@]}; do
 	echo Time to back up $source: $(date -d@${ELAPSED} -u +%Hh:%Mm:%Ss)
 done
 
-cp "$LOGFILE" "$BACKUPDIRNOW/"
+mv "$LOGFILE" "$BACKUPDIRNOW/"
 
 # How much space did we use?
 #AVAIL=($(df --sync --output=avail "$DRIVE"))

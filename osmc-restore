@@ -10,7 +10,7 @@
 
 # Any comments or bug reports to discourse.osmc.tv.
 
-VERSION='0.1.10' ## better handling after format
+VERSION='0.1.11' ## better handling after format
 #set -x
 # check if this is being run as root
 if (( $(/usr/bin/id -u) != 0 )); then
@@ -462,7 +462,7 @@ RESTORED=0
 PARTSFOUND=0
 while [ $PARTSFOUND \< ${#PARTStoRESTORE[@]} ]; do
 	# check what partitions we have
-	PARTS=($(lsblk -blo NAME | grep "$MEDIA$PARTPREFIX\S\s"))
+	PARTS=($(lsblk -lo NAME | grep "$MEDIA$PARTPREFIX\S$"))
 	echo Looking for existing partitions on $DEVICE
 	echo Partitions found: ${#PARTS[@]} ${PARTS[@]}
 	echo

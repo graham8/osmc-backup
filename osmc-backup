@@ -11,7 +11,7 @@
 
 # Any comments or bug reports to discourse.osmc.tv.
 
-VERSION='0.1.10' ## don't keep logfile in scriptdir, exclude /opt/**/mnt
+VERSION='0.1.11' ## Use pv for progress and other syncs to remote version
 
 ## *********************************************************************
 #            Set up the variables for your system
@@ -66,12 +66,19 @@ fi
 
 # check we have rsync
 if ! rsync --version &> /dev/null; then
+	GETDEPENDS=1
 	echo -e "\nThis script needs rsync but I can't find it\nTry: sudo apt-get install rsync (or similar)\n"
-	exit 0
 fi
 
+# check we have pv
+if ! pv --version &> /dev/null; then
+	GETDEPENDS=1
+	echo -e "\nThis script needs pv but I can't find it\nTry: sudo apt-get install pv (or similar)\n"
+fi
+
+if (($GETDEPENDS)); then exit 0; fi
 # provide for BACKUPDIR to be specified on a commandline
-if [ -z "$1" ]; then
+if [ -z "$@" ]; then
 	BACKUPDIR="$DEFAULTBACKUPDIR"
 else
 	BACKUPDIR="$1"
@@ -87,10 +94,10 @@ LOGFILE="$SCRIPTDIR"/rsynclog$(date +%F)
 
 # using just the date to name the backup directories
 ### add time of day for more frequent backups
-BACKUPDIRNOW="$BACKUPDIR"/$(date +%F)
+NOW=$(date +%F)
 
 echo $(date) Backup version $VERSION
-echo Going to back up to $BACKUPDIRNOW "(unless I can't find it)."
+echo Going to back up to $BACKUPDIR/$NOW "(unless I can't find it)."
 
 ### if backing up to a network resource, you will need to mount it
 # eg for an nfs server:
@@ -156,7 +163,7 @@ else
 fi
 
 # find the most recent previous backup, count previous backups and delete old ones
-BACKUPDIRLAST=
+LAST=
 BACKUPCOUNT=0
 OLDESTKEEP=$(date -d "-$(($DAYSTOKEEP))days" +%F)
 echo -e "\nCounting and deleting backups older than $OLDESTKEEP or if more than $BACKUPSTOKEEP of them"
@@ -165,11 +172,11 @@ if [ -d "$BACKUPDIR" ]; then
 		# ignore directories and files without a date
 		if ! [[ $i =~ ^[0-9]*-[0-9]*-[0-9]* ]]; then
 			continue
-		elif [[ "$BACKUPDIR/$i" != "$BACKUPDIRNOW" ]]; then
+		elif [[ "$BACKUPDIR/$i" != "$BACKUPDIR/$NOW" ]]; then
 			if [ $BACKUPCOUNT == 0 ]; then
 				# this should be the most recent backup, irrespective of its name
 				echo Latest backup from $i kept
-				BACKUPDIRLAST="$BACKUPDIR/$i"
+				LAST="$i"
 				BACKUPCOUNT=$(( $BACKUPCOUNT + 1 ))
 			elif [[ $i =~ ^[0-9]*-[0-9]*-[0-9]*$ ]]; then
 				# any directory with a bare date is counted
@@ -194,10 +201,12 @@ fi
 # backups if there is a danger of filling up the backup device
 
 function ToggleServices(){
-	for s in ${SERVICESTOPAUSE[@]}; do
-		echo Going to $1 $s
-		systemctl $1 $s.service
-	done
+	if ! [ -z $SERVICESTOPAUSE ]; then
+		for s in ${SERVICESTOPAUSE[@]}; do
+			echo Going to $1 $s
+			systemctl $1 $s.service
+		done
+	fi
 }
 
 function DieNicely(){
@@ -219,9 +228,9 @@ for source in ${PARTSTOBACKUP[@]}; do
 	source=${source#/}
 	# tidy up if partition is still mounted in /media
 #	umount /media/$source &> /dev/null
-	RSYNCOPTS="-axHAX"
+	RSYNCOPTS="-axHAXii"
 	if [[ $FSTYPE == "nfs" ]]; then ## ACLs and xattrs are not supported
-		RSYNCOPTS="-axH"
+		RSYNCOPTS="-axHii"
 	fi
 	EXCLUDES='--exclude=.gvfs'
  	if [ $source == "system" ]; then
@@ -231,7 +240,7 @@ for source in ${PARTSTOBACKUP[@]}; do
 		EXCLUDES+=' --exclude=/lost+found'
 		# these mount directories should be excluded automatically by the mount process below
 		# but just to be sure
-		EXCLUDES+=' --exclude=mnt/* --exclude=/media/*'
+		EXCLUDES+=' --exclude=/mnt/* --exclude=/media/*'
 ###		you may like to uncomment the next line - these directories should be unnecessary for a restore
 		#EXCLUDES+=' --exclude=/var/cache/* --exclude=/var/run/* --exclude=/var/tmp/*'
 
@@ -248,9 +257,9 @@ for source in ${PARTSTOBACKUP[@]}; do
 
 	echo -e "\n$source is on $SRCDEV - copying from $SRCROOT"
 
-	if ! [ -d "$BACKUPDIRNOW"/$source ]; then
-		mkdir -p "$BACKUPDIRNOW"/$source
-	elif ! [ $(ls "$BACKUPDIRNOW"/$source | wc -l) == 0 ]; then
+	if ! [ -d "$BACKUPDIR/$NOW"/$source ]; then
+		mkdir -p "$BACKUPDIR/$NOW"/$source
+	elif ! [ $(ls "$BACKUPDIR/$NOW"/$source | wc -l) == 0 ]; then
 		echo $source has already been backed up today and will be overwritten
 		if read -n1 -rsp "Press any key within 10 secs to skip .... " -t 10 key; then
 			echo ""
@@ -260,14 +269,14 @@ for source in ${PARTSTOBACKUP[@]}; do
 		# rsync may not delete links to gash files in the backup directory
 		echo OK, deleting earlier backup
 		SPACEONDRIVE0=$(df --sync --output=avail "$DRIVE" | grep -o "[[:digit:]]*")
-		rm -r "$BACKUPDIRNOW/$source"* && echo $BACKUPDIRNOW/$source deleted
+		rm -r "$BACKUPDIR/$NOW/$source"* && echo $BACKUPDIR/$NOW/$source deleted
 		SPACEONDRIVE1=$(df --sync --output=avail "$DRIVE" | grep -o "[[:digit:]]*")
 		SPACEFREED=$(($SPACEFREED + $SPACEONDRIVE1 - $SPACEONDRIVE0))
 		printf "%s%'u%s\n" "Now " $SPACEONDRIVE1 " KiB available on drive"
 	fi
 
 	START=$(date +%s)
-	echo Backing up $source partition to "$BACKUPDIRNOW"/$source
+	echo Backing up $source partition to $BACKUPDIR/$NOW/$source
 #	cd /media
 #	if ! [[ $SRCDEV == "" ]]; then
 #		# source is already mounted, but we'll mount it again in /media
@@ -284,35 +293,55 @@ for source in ${PARTSTOBACKUP[@]}; do
 #		echo Source is not a device - not currently supported
 #		continue
 #	fi
+	FIRSTRUN=0
+	if [ -z "$LAST" ]; then
+		FIRSTRUN=1
+		echo No previous backups in "$BACKUPDIR" - making first copy
+	elif ! [[ $(rsync "$BACKUPDIR/$LAST/$source/" 2> /dev/null | wc -l) > 1 ]]; then
+		# no previous backup here
+		FIRSTRUN=1
+		echo Can\'t find previous backup at "$BACKUPDIR/$LAST/$source/" - making first copy
+	fi
 
-	if [ ! "$BACKUPDIRLAST" ] || [ ! -d "$BACKUPDIRLAST/$source" ]; then
+	echo Counting files ...
+	FILECOUNT=$(find $SRCROOT -mount | wc -l)
+	echo $FILECOUNT files and directories to process
+
+	if (($FIRSTRUN)); then
 		# no previous backup here
 		echo Backup directory is empty - making first copy
-		echo rsync "$RSYNCOPTS" $EXCLUDES $SRCROOT "$BACKUPDIRNOW/$source" &>> "$LOGFILE"
-		rsync "$RSYNCOPTS" "$EXCLUDES" "$SRCROOT" "$BACKUPDIRNOW/$source" --log-file="$LOGFILE" || DieNicely $source "rsync failed while making first backup"
+		echo rsync "$RSYNCOPTS" $EXCLUDES $SRCROOT "$BACKUPDIR/$NOW/$source" &>> "$LOGFILE"
+		rsync "$RSYNCOPTS" "$EXCLUDES" "$SRCROOT" "$BACKUPDIR/$NOW/$source" --log-file="$LOGFILE" \
+			| pv -lepbts $FILECOUNT >/dev/null \
+			|| DieNicely $source "rsync stopped while making first backup"
 	else
 		echo There are $BACKUPCOUNT previous backups
-		echo Found latest backup at $BACKUPDIRLAST/$source
+		echo Found latest backup at $BACKUPDIR/$LAST/$source
 		# make a conventional incremental backup to today's directory
-		echo Incremental backup: copying new and changed files to "$BACKUPDIRNOW/$source"
+		echo Incremental backup: copying new and changed files to "$BACKUPDIR/$NOW/$source"
 		# if more than one backup in one day, results will be appended
 		if [ -e "$LOGFILE" ]; then echo >> "$LOGFILE"; fi
 ###		the rsync -c option does a checksum comparison on each file - slow but sure
-		echo rsync "$RSYNCOPTS"c "$EXCLUDES" --compare-dest="$BACKUPDIRLAST/$source" "$SRCROOT" "$BACKUPDIRNOW/$source" >> "$LOGFILE"
-		rsync "$RSYNCOPTS"c "$EXCLUDES" --compare-dest="$BACKUPDIRLAST/$source" "$SRCROOT" "$BACKUPDIRNOW/$source" --log-file="$LOGFILE"  || DieNicely $source "rsync failed while making incremental backup"
+		echo rsync "$RSYNCOPTS"c "$EXCLUDES" --compare-dest="$BACKUPDIR/$LAST/$source" "$SRCROOT" "$BACKUPDIRNOW/$source" >> "$LOGFILE"
+		rsync "$RSYNCOPTS"c "$EXCLUDES" --compare-dest="$BACKUPDIR/$LAST/$source" "$SRCROOT" "$BACKUPDIRNOW/$source" --log-file="$LOGFILE" \
+			| pv -lepbts $FILECOUNT >/dev/null \
+			|| DieNicely $source "rsync stopped while making incremental backup"
 ###		keep a copy of the new and changed files (optional - comment out if not needed)
-		echo Making a copy of the new and changed files in "$BACKUPDIRNOW/$source-delta"
-		rsync "$RSYNCOPTS"m --link-dest="$BACKUPDIRNOW/$source" "$BACKUPDIRNOW/$source/" "$BACKUPDIRNOW/$source-delta" --log-file="$LOGFILE"  || DieNicely $source "rsync failed while recording changes"
+		echo Making a copy of the new and changed files in "$BACKUPDIR/$NOW/$source-delta"
+		rsync "$RSYNCOPTS"m --link-dest="$BACKUPDIR/$NOW/$source" "$BACKUPDIR/$NOW/$source/" "$BACKUPDIR/$NOW/$source-delta" --log-file="$LOGFILE" \
+			|| DieNicely $source "rsync failed while recording changes"
 		# link all the files from the last backup
 		echo Cloning unchanged files from previous backup
-		cp -al --no-clobber "$BACKUPDIRLAST/$source" "$BACKUPDIRNOW"  || DieNicely $source "failed while linking previous backup"
+		cp -al --no-clobber "$BACKUPDIR/$LAST/$source" "$BACKUPDIR/$NOW"  || DieNicely $source "failed while linking previous backup"
 		# and remove files which were removed from the source to end up with an exact copy of the source
 		# --existing prevents new files being added (since the first rsync above)
 		# and --ignore-existing stops changes to the backup which might propogate to previous backups
 		echo Deleting files no longer on source
 		echo >> "$LOGFILE"
-		echo rsync "$RSYNCOPTS" "$EXCLUDES" --existing --ignore-existing --delete --delete-excluded "$SRCROOT" "$BACKUPDIRNOW/$source" >> "$LOGFILE"
-		rsync "$RSYNCOPTS" "$EXCLUDES" --existing --ignore-existing --delete --delete-excluded "$SRCROOT" "$BACKUPDIRNOW/$source" --log-file="$LOGFILE"  || DieNicely $source "rsync failed while deleting files"
+		echo rsync "$RSYNCOPTS" "$EXCLUDES" --existing --ignore-existing --delete --delete-excluded "$SRCROOT" "$BACKUPDIR/$NOW/$source" >> "$LOGFILE"
+		rsync "$RSYNCOPTS" "$EXCLUDES" --existing --ignore-existing --delete --delete-excluded "$SRCROOT" "$BACKUPDIR/$NOW/$source" --log-file="$LOGFILE" \
+			| pv -lepbts $FILECOUNT >/dev/null \
+			|| DieNicely $source "rsync stopped while deleting files"
 	fi
 
 #	cd /media
@@ -322,7 +351,7 @@ for source in ${PARTSTOBACKUP[@]}; do
 	echo Time to back up $source: $(date -d@${ELAPSED} -u +%Hh:%Mm:%Ss)
 done
 
-mv "$LOGFILE" "$BACKUPDIRNOW/"
+mv "$LOGFILE" "$BACKUPDIR/$NOW/"
 
 # How much space did we use?
 #AVAIL=($(df --sync --output=avail "$DRIVE"))

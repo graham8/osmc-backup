@@ -4,14 +4,14 @@
 # is backed up to a directory called system. User-specified branches of the filesystem 
 # with other mountpoints, eg /home or /boot are backed up to directories of the same name
 
-# Copyright (c) Graham Horner, 2017. 
+# Copyright (c) Graham Horner, 2017-2019. 
 # Feel free to use and/or modify for any non-commercial purposes.
 # No warranty as to fitness of purpose or suitability
 # is given or should be inferred.
 
 # Any comments or bug reports to discourse.osmc.tv.
 
-VERSION='0.1.11' ## Use pv for progress and other syncs to remote version
+VERSION='0.1.12' ## add autofs and warning vero has only one partition
 
 ## *********************************************************************
 #            Set up the variables for your system
@@ -30,7 +30,7 @@ DEFAULTBACKUPDIR="/media/1Text4/osmcbackup"
 # !! smb/cifs does not support hard links so cannot be used
 # !! even if the backup destination is ext formatted
 
-FSTYPES=(ext xfs reiserfs nfs)
+FSTYPES=(ext xfs reiserfs nfs autofs)
 
 # backups older than DAYSTOKEEP or older than the oldest of
 # BACKUPSTOKEEP will be deleted before making this backup
@@ -44,6 +44,7 @@ DAYSTOKEEP=365
 BACKUPSTOKEEP=7
 
 # the two default partitions on a RPi install (system is /)
+# vero has only one (system) partition
 # currently, this script does not work with normal directories, only mount points
 
 PARTSTOBACKUP=(system boot)
@@ -51,7 +52,7 @@ PARTSTOBACKUP=(system boot)
 # to minimize the risk of corrupted files or inconsistent file structure
 # shut down the following services
 
-SERVICESTOPAUSE=(tvheadend mediacenter)
+SERVICESTOPAUSE=(mediacenter tvheadend)
 
 ## *********************************************************************
 #                  End of normal user input parameters

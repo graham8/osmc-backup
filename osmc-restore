@@ -10,8 +10,11 @@
 
 # Any comments or bug reports to discourse.osmc.tv.
 
-VERSION='0.1.11' ## better handling after format
+VERSION='0.1.12' ## further check for vero and print version
 #set -x
+
+echo $(date) Restore version $VERSION
+
 # check if this is being run as root
 if (( $(/usr/bin/id -u) != 0 )); then
 	echo Must be run as root!
@@ -107,6 +110,8 @@ if [[ ${BACKUPDIR^^} =~ "VERO" ]]; then
 elif ((LIVE)) && [[ $(cat /proc/cmdline) =~ vero ]]; then
 	VERO=1
 elif ! [ -d "$BACKUPDIR/boot" ] && ! (($CLONE)); then
+	VERO=1
+elif [ $(ls "$BACKUPDIR/system/boot" | wc -l) \> 0 ]; then
 	VERO=1
 fi
 

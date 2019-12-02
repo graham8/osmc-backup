@@ -11,7 +11,7 @@
 
 # Any comments or bug reports to discourse.osmc.tv.
 
-VERSION='0.1.12' ## add autofs and warning vero has only one partition
+VERSION='0.1.12a' ## correct path to backup dir
 
 ## *********************************************************************
 #            Set up the variables for your system
@@ -323,8 +323,8 @@ for source in ${PARTSTOBACKUP[@]}; do
 		# if more than one backup in one day, results will be appended
 		if [ -e "$LOGFILE" ]; then echo >> "$LOGFILE"; fi
 ###		the rsync -c option does a checksum comparison on each file - slow but sure
-		echo rsync "$RSYNCOPTS"c "$EXCLUDES" --compare-dest="$BACKUPDIR/$LAST/$source" "$SRCROOT" "$BACKUPDIRNOW/$source" >> "$LOGFILE"
-		rsync "$RSYNCOPTS"c "$EXCLUDES" --compare-dest="$BACKUPDIR/$LAST/$source" "$SRCROOT" "$BACKUPDIRNOW/$source" --log-file="$LOGFILE" \
+		echo rsync "$RSYNCOPTS"c "$EXCLUDES" --compare-dest="$BACKUPDIR/$LAST/$source" "$SRCROOT" "$BACKUPDIR/$NOW/$source" >> "$LOGFILE"
+		rsync "$RSYNCOPTS"c "$EXCLUDES" --compare-dest="$BACKUPDIR/$LAST/$source" "$SRCROOT" "$BACKUPDIR/$NOW/$source" --log-file="$LOGFILE" \
 			| pv -lepbts $FILECOUNT >/dev/null \
 			|| DieNicely $source "rsync stopped while making incremental backup"
 ###		keep a copy of the new and changed files (optional - comment out if not needed)

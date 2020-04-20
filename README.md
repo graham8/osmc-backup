@@ -9,7 +9,7 @@ Some checks are included, for the existence of the backup media for example, but
 
 As at version 0.1.9 of the backup script and 0.1.5 of the restore script, vero4k is supported. Users report the script does work with Vero 2. There is also now a facility to shut down kodi, tvheadend and any other services (user specified) that may write to the filesystem while the backup is happening.
 
-Everyone will have their own take on how and when to make backups. This script can keep daily copies of your SD card for ever which would be overkill but you can set up your own schedule. I keep backups for a week. The only dependency is rsync, which is in the repository, and for unattended operation cron, which is in the App Store. A suitable crontab line looks like:
+Everyone will have their own take on how and when to make backups. This script can keep daily copies of your SD card for ever which would be overkill but you can set up your own schedule. I keep backups for a week. The only dependencies are rsync and pv for backup and parted for restore which are all in the repository, and for unattended operation cron, which is in the App Store. A suitable line in /etc/crontab looks like:
 
 15 2 * * * root /home/osmc/osmc-backup >> /home/osmc/backlog
 
@@ -20,6 +20,6 @@ osmc-restore [-f] path/to/backup/dir [destination]
 
 You can specify the destination (eg sda) on the commandline or you will be prompted for it. The switch -f forces a format of the destination sd card. If there aren’t suitable partitions on the card, you will be prompted to format it. You can also run osmc-restore / to clone your working system to SD card or USB drive, which does not have to be the same size.
 
-The restore for vero uses a similar partitioning to RPI. The script makes a tarball of the backup directory on the ext4 partition so it can be installed using a recent copy of a dtb.img and kernel.img from an installation image. These are looked for in the top level of the backup directory and in the script directory.  If not found, they have to be copied to the SD card or USB drive manually.
+The restore for vero uses a similar partitioning to RPi. The script makes a tarball of the backup directory on the ext4 partition so it can be installed using a recent copy of a dtb.img and kernel.img from an installation image. These are looked for in the top level of the backup directory and in the script directory.  If not found, they have to be copied to the SD card or USB drive manually.
 
 Comments and suggestions for improvement are welcome.

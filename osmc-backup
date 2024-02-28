@@ -11,7 +11,7 @@
 
 # Any comments or bug reports to discourse.osmc.tv.
 
-VERSION='0.1.12a' ## correct path to backup dir
+VERSION='0.1.14' ## fix error message when unsupported file format
 
 ## *********************************************************************
 #            Set up the variables for your system
@@ -144,11 +144,11 @@ if [[ "$BACKUPDIR/" =~ ((^/media/[^/]*)/[^/]*) ]] \
 					#fi
 					break
 				fi
-				if ! (($MEDIAFOUND)); then
-					echo -e "Found backup media at $DRIVE but it's not in a suitable format\nShould be one of ${FSTYPES[@]}"
-					exit 1
-				fi
 			done
+			if ! (($MEDIAFOUND)); then
+				echo -e "Found backup media at $DRIVE but it's not in a suitable format\nShould be one of ${FSTYPES[@]}"
+				exit 1
+			fi
 		fi
 		if (($MEDIAFOUND)); then break; fi
 	done

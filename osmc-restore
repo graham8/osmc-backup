@@ -10,7 +10,7 @@
 
 # Any comments or bug reports to discourse.osmc.tv.
 
-VERSION='0.1.12' ## further check for vero and print version
+VERSION='0.1.12a' ## avoid file not found message
 #set -x
 
 echo $(date) Restore version $VERSION
@@ -105,16 +105,19 @@ else
 fi
 
 VERO=0
-if [[ ${BACKUPDIR^^} =~ "VERO" ]]; then 
+if (($LIVE)); then
+   if [[ $(cat /proc/cmdline) =~ vero ]]; then
 	VERO=1
-elif ((LIVE)) && [[ $(cat /proc/cmdline) =~ vero ]]; then
-	VERO=1
-elif ! [ -d "$BACKUPDIR/boot" ] && ! (($CLONE)); then
-	VERO=1
-elif [ $(ls "$BACKUPDIR/system/boot" | wc -l) \> 0 ]; then
-	VERO=1
+   fi
+else
+	if [[ ${BACKUPDIR^^} =~ "VERO" ]]; then 
+		VERO=1
+	elif ! [ -d "$BACKUPDIR/boot" ] && ! (($CLONE)); then
+		VERO=1
+	elif [ $(ls "$BACKUPDIR/system/boot" | wc -l) \> 0 ]; then
+		VERO=1
+	fi
 fi
-
 SCRIPTDIR="$( pushd "$( dirname "${BASH_SOURCE[0]}" )" > /dev/null && pwd && popd > /dev/null )"
 
 BACKUPFOUND=0
